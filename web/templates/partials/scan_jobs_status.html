@@ -1,0 +1,30 @@
+<style>
+.badge { padding: 2px 8px; border-radius: 3px; font-size: 0.75em; }
+.pending { background: #333; color: #ccc; }
+.running { background: #3c1a1a; color: #ffcdd2; }
+.completed { background: #1b3a1f; color: #a5d6a7; }
+.failed { background: #5d2121; color: #ffcdd2; }
+</style>
+
+<table>
+  <thead>
+    <tr>
+      <th>GEO</th>
+      <th>🟡 Pending</th>
+      <th>🔴 Running</th>
+      <th>🟢 Completed</th>
+      <th>❌ Failed</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for geo in ['US', 'EU', 'ASIA'] %}
+    <tr>
+      <td><strong>{{ geo }}</strong></td>
+      <td><span class="badge pending">{{ masscan_status_counts.get(geo, {}).get('pending', 0) }}</span></td>
+      <td><span class="badge running">{{ masscan_status_counts.get(geo, {}).get('running', 0) }}</span></td>
+      <td><span class="badge completed">{{ masscan_status_counts.get(geo, {}).get('completed', 0) }}</span></td>
+      <td><span class="badge failed">{{ masscan_status_counts.get(geo, {}).get('failed', 0) }}</span></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>

@@ -1,0 +1,112 @@
+<div class="card">
+    <h3>🧪 Proxy Checker</h3>
+
+    <!-- Status line -->
+    <div style="margin-bottom: 12px; padding:8px; background:#2a2a2a; border-radius:4px;">
+        <strong>Status:</strong>
+        <span id="proxy-checker-status"
+              hx-get="/proxy-checker-status"
+              hx-trigger="load, every 5s"
+              hx-swap="innerHTML">
+            Checking...
+        </span>
+    </div>
+
+    <!-- 📋 LIVE LOGS (НОВОЕ) -->
+    <div style="background:#1a1a1a; padding:12px; border-radius:4px; margin-bottom:16px; max-height:200px; overflow-y:auto; border:1px solid #333;">
+        <strong>📋 Live Logs:</strong>
+        <div id="proxy-logs"
+             hx-get="/proxy-checker-logs"
+             hx-trigger="load, every 3s"
+             hx-swap="innerHTML"
+             style="font-family:monospace; font-size:0.85em; white-space:pre-wrap; margin-top:8px; color:#e0e0e0;">
+            Loading logs...
+        </div>
+    </div>
+
+    <!-- Buttons -->
+    <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:10px;">
+
+        <button class="btn"
+                hx-post="/proxy-checker-start"
+                hx-confirm="Start proxy checker?"
+                hx-target="#proxy-action-result"
+                hx-swap="innerHTML"
+                style="background:#2e7d32;">
+            ▶ Start
+        </button>
+
+        <button class="btn"
+                hx-post="/proxy-checker-pause"
+                hx-confirm="Pause checker?"
+                hx-target="#proxy-action-result"
+                hx-swap="innerHTML"
+                style="background:#f57c00;">
+            ⏸ Pause
+        </button>
+
+        <button class="btn"
+                hx-post="/proxy-checker-resume"
+                hx-target="#proxy-action-result"
+                hx-swap="innerHTML"
+                style="background:#1976d2;">
+            ▶ Resume
+        </button>
+
+        <button class="btn"
+                hx-post="/proxy-checker-stop"
+                hx-confirm="Stop checker?"
+                hx-target="#proxy-action-result"
+                hx-swap="innerHTML"
+                style="background:#d32f2f;">
+            ⛔ Stop
+        </button>
+
+        <button class="btn"
+                onclick="document.getElementById('proxy-logs').innerHTML='Logs cleared'"
+                style="background:#5c5c5c;">
+            🧹 Clear Logs
+        </button>
+    </div>
+
+    <!-- action result -->
+    <div id="proxy-action-result" style="margin-bottom:12px; min-height:20px;"></div>
+
+    <!-- Proxy table -->
+    <h3>📦 Live Proxy List (Top 50)</h3>
+
+    <table style="width:100%; border-collapse:collapse;">
+        <thead>
+            <tr style="background:#2a2a2a;">
+                <th style="padding:8px; text-align:left;">Host</th>
+                <th style="padding:8px; text-align:left;">Port</th>
+                <th style="padding:8px; text-align:left;">Geo</th>
+                <th style="padding:8px; text-align:left;">Anonymity</th>
+                <th style="padding:8px; text-align:left;">Speed</th>
+                <th style="padding:8px; text-align:left;">Status</th>
+            </tr>
+        </thead>
+
+        <tbody id="proxy-table-body"
+               hx-get="/proxy-table?limit=50"
+               hx-trigger="load, every 10s"
+               hx-swap="innerHTML">
+            <tr><td colspan="6" style="text-align:center; padding:20px;">Loading proxies...</td></tr>
+        </tbody>
+    </table>
+</div>
+
+<style>
+.btn {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 4px;
+    color: white;
+    cursor: pointer;
+    font-size: 0.9em;
+    transition: opacity 0.2s;
+}
+.btn:hover {
+    opacity: 0.8;
+}
+</style>

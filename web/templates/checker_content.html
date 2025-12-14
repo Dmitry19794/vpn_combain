@@ -1,0 +1,42 @@
+<div class="p-4">
+  <h3 class="text-lg font-bold mb-4">Checker</h3>
+
+  <input type="file" id="checkerFile" class="mb-4">
+
+  <button onclick="startChecker()" class="bg-green-600 text-white px-4 py-2 rounded">
+    Start
+  </button>
+
+  <div class="mt-4" id="checkerStatus">Status: idle</div>
+</div>
+
+<script>
+async function startChecker() {
+  const file = document.getElementById("checkerFile").files[0];
+  if (!file) {
+    alert("Select file first");
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const res = await fetch("/start-checker", {
+    method: "POST",
+    body: formData
+  });
+
+  const data = await res.json();
+  document.getElementById("checkerStatus").innerText = "Status: " + data.status;
+}
+
+async function pollChecker() {
+  const res = await fetch("/checker-status");
+  const data = await res.json();
+
+  document.getElementById("checkerStatus").innerText =
+    "Running: " + data.running + " | PID: " + data.pid;
+}
+
+setInterval(pollChecker, 3000);
+</script>

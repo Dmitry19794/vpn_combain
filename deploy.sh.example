@@ -1,0 +1,44 @@
+#!/bin/bash
+# deploy.sh.example — безопасный шаблон развертывания (без секретов!)
+# Перед использованием:
+#   cp deploy.sh.example deploy.sh
+#   export DB_USER=brute
+#   export DB_PASSWORD=your_strong_password_here
+#   export DB_NAME=brute_system
+#   export PGPORT=5432
+#   export REDIS_URL=redis://127.0.0.1:6379/0
+#   export DATABASE_URL="postgresql://\$DB_USER:\$DB_PASSWORD@127.0.0.1:\$PGPORT/\$DB_NAME"
+
+set -euo pipefail
+
+# === Настройки (все через переменные окружения) ===
+DB_USER="${DB_USER:-brute}"
+DB_PASSWORD="${DB_PASSWORD:-}"
+DB_NAME="${DB_NAME:-brute_system}"
+PGPORT="${PGPORT:-5432}"
+REDIS_URL="${REDIS_URL:-redis://127.0.0.1:6379/0}"
+DATABASE_URL="${DATABASE_URL:-postgresql://\$DB_USER:\$DB_PASSWORD@127.0.0.1:\$PGPORT/\$DB_NAME}"
+
+# === Функции ===
+log() { echo "[$(date +%H:%M:%S)] $*"; }
+
+# ... остальная логика установки пакетов, Go, Python ...
+
+# Пример безопасного создания пользователя (пароль из окружения):
+# sudo -u postgres psql -c "
+#   DO \$\$
+#   BEGIN
+#     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = $DB_USER) THEN
+#       CREATE USER \$DB_USER WITH PASSWORD $DB_PASSWORD;
+#     ELSE
+#       ALTER USER \$DB_USER WITH PASSWORD $DB_PASSWORD;
+#     END IF;
+#   END \$\$;
+# "
+
+# ... настройка systemd, nginx, замена DSN через sed (теперь — безопасно) ...
+
+# ВАЖНО: замена DSN в коде должна использовать переменные, например:
+# sed -i "s|DB_DSN.*|DB_DSN = os.getenv(DATABASE_URL, )|" web/main.py
+
+log "✅ Deployment script template ready. Fill in secrets via environment variables."

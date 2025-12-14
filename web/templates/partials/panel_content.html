@@ -1,0 +1,125 @@
+<div class="card">
+    <h3>📊 System Status</h3>
+
+    <table style="width:100%;">
+        <tr>
+            <td><strong>Component</strong></td>
+            <td><strong>Status</strong></td>
+        </tr>
+        <tr>
+            <td>Celery Worker</td>
+            <td>
+                <span hx-get="/celery-status"
+                      hx-trigger="load, every 5s"
+                      hx-swap="innerHTML">
+                    Checking...
+                </span>
+            </td>
+        </tr>
+        <tr>
+            <td>Proxy Checker</td>
+            <td>
+                <span hx-get="/proxy-checker-status"
+                      hx-trigger="load, every 5s"
+                      hx-swap="innerHTML">
+                    Checking...
+                </span>
+            </td>
+        </tr>
+        <tr>
+            <td>Masscan</td>
+            <td>
+                <span hx-get="/scan-process-status"
+                      hx-trigger="load, every 5s"
+                      hx-swap="innerHTML">
+                    Checking...
+                </span>
+            </td>
+        </tr>
+        <tr>
+            <td>VPN Checker</td>
+            <td>—</td>
+        </tr>
+        <tr>
+            <td>Brute Engine</td>
+            <td>—</td>
+        </tr>
+        <tr>
+            <td>Backend</td>
+            <td>✅ Connected</td>
+        </tr>
+        <tr>
+            <td>Database</td>
+            <td>✅ Connected</td>
+        </tr>
+    </table>
+</div>
+
+<div class="card">
+    <h3>📊 Active Scan Jobs</h3>
+
+    <div hx-get="/scan-jobs-status"
+         hx-trigger="load, every 5s"
+         hx-swap="innerHTML">
+        Loading scan jobs...
+    </div>
+</div>
+
+<div class="card">
+    <h3>🚀 Quick Actions</h3>
+
+    <div style="display:flex; gap:10px; flex-wrap:wrap;">
+        <button class="btn"
+                hx-post="/start-masscan"
+                hx-confirm="Start scanning?"
+                hx-target="#scan-action-result"
+                hx-swap="innerHTML"
+                style="background:#2e7d32;">
+            ▶ Start Masscan
+        </button>
+
+        <button class="btn"
+                hx-get="/proxy-content"
+                hx-target="#main-content"
+                hx-swap="innerHTML"
+                style="background:#1976d2;">
+            🔧 Go to Proxy
+        </button>
+
+        <button class="btn"
+                hx-get="/masscan-content"
+                hx-target="#main-content"
+                hx-swap="innerHTML"
+                style="background:#1976d2;">
+            📡 Go to Masscan
+        </button>
+    </div>
+
+    <div id="scan-action-result" style="margin-top:10px;"></div>
+</div>
+
+<div class="card">
+    <h3>📈 Statistics</h3>
+
+    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:16px;">
+        <div style="background:#2a2a2a; padding:12px; border-radius:4px; text-align:center;">
+            <div style="font-size:2em; color:#2e7d32;">{{ vpn_total or 0 }}</div>
+            <div style="color:#888; font-size:0.85em;">Total VPNs</div>
+        </div>
+
+        <div style="background:#2a2a2a; padding:12px; border-radius:4px; text-align:center;">
+            <div style="font-size:2em; color:#1976d2;">{{ running_count or 0 }}</div>
+            <div style="color:#888; font-size:0.85em;">Active Scans</div>
+        </div>
+
+        <div style="background:#2a2a2a; padding:12px; border-radius:4px; text-align:center;">
+            <div style="font-size:2em; color:#f57c00;">—</div>
+            <div style="color:#888; font-size:0.85em;">Proxies</div>
+        </div>
+
+        <div style="background:#2a2a2a; padding:12px; border-radius:4px; text-align:center;">
+            <div style="font-size:2em; color:#7b1fa2;">—</div>
+            <div style="color:#888; font-size:0.85em;">Credentials</div>
+        </div>
+    </div>
+</div>

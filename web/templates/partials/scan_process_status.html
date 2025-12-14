@@ -1,0 +1,11 @@
+<div style="margin-bottom:8px;">
+  <strong>🔴 Running:</strong> {{ running_count }}
+</div>
+<form hx-post="/start-masscan" hx-target="#scan-process-status" hx-swap="outerHTML">
+  <input type="hidden" name="geo" value="US">
+  <button type="submit" class="btn">▶️ Запустить US</button>
+</form>
+<form style="display:inline-block; margin-left:8px;" hx-post="/flush-queue" hx-swap="none" 
+      _="on htmx:afterRequest call alert('Очередь сброшена')">
+  <button type="submit" class="btn" style="background:#d32f2f;">🧹 Очистить</button>
+</form>

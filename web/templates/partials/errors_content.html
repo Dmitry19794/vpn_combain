@@ -1,0 +1,48 @@
+<div class="card">
+  <h3>🚨 Ошибки приложения</h3>
+
+  <form hx-post="/clear-errors"
+        hx-confirm="Очистить все ошибки?"
+        hx-target="#main-content"
+        hx-swap="outerHTML"
+        style="margin-bottom:12px;">
+    <button class="btn" style="background:#b71c1c;">🗑 Очистить все</button>
+  </form>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Время</th>
+        <th>Метод</th>
+        <th>Путь</th>
+        <th>Код</th>
+        <th>Ошибка</th>
+        <th>Traceback</th>
+      </tr>
+    </thead>
+
+    <tbody>
+      {% for e in errors %}
+      <tr style="background:#2a1515;">
+        <td>{{ e.created_at }}</td>
+        <td>{{ e.method }}</td>
+        <td><code>{{ e.path }}</code></td>
+        <td>{{ e.status_code }}</td>
+        <td style="color:#ff8a80;">{{ e.error }}</td>
+        <td>
+          <details>
+            <summary style="cursor:pointer;">Показать</summary>
+            <pre style="max-width:600px; overflow:auto; font-size:0.75em; background:#111; padding:8px;">{{ e.traceback }}</pre>
+          </details>
+        </td>
+      </tr>
+      {% else %}
+      <tr>
+        <td colspan="6" style="text-align:center; color:#a5d6a7;">
+          ✅ Ошибок нет
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>

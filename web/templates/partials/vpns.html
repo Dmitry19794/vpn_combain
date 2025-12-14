@@ -1,0 +1,27 @@
+<!-- templates/partials/vpns.html -->
+<table border="1" cellpadding="8" style="width:100%; border-collapse:collapse;">
+    <tr><th>URL</th><th>Протокол</th><th>Статус</th><th>Гео</th><th>Действия</th></tr>
+    {% for vpn in vpns %}
+    <tr>
+        <td><a href="{{ vpn.target_url }}" target="_blank">{{ vpn.target_url }}</a></td>
+        <td>{{ vpn.protocol }}</td>
+        <td>
+            <span class="status-badge 
+                {% if vpn.status == 'brute_success' %}brute_success
+                {% elif vpn.status == 'brute_queued' %}brute_queued
+                {% endif %}">
+                {{ vpn.status }}
+            </span>
+        </td>
+        <td>{{ vpn.geo }}</td>
+        <td>
+            {% if vpn.status == 'brute_success' %}
+            <form hx-post="/rebrut" hx-swap="none">
+                <input type="hidden" name="vpn_id" value="{{ vpn.id }}">
+                <button class="btn" type="submit">🔁 Rebrut</button>
+            </form>
+            {% endif %}
+        </td>
+    </tr>
+    {% endfor %}
+</table>

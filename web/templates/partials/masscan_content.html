@@ -1,0 +1,59 @@
+<div class="card">
+  <h3>📤 Upload Subnets for Scanning</h3>
+  <form hx-post="/upload-subnets" 
+        hx-encoding="multipart/form-data"
+        hx-target="#upload-feedback"
+        hx-swap="innerHTML">
+    <div style="margin-bottom:8px;">
+      <label>📁 File (CIDR/IP, one per line):</label><br>
+      <input type="file" name="file" required style="width:100%;">
+    </div>
+    <div style="margin-bottom:8px;">
+      <label>🌍 GEO:</label><br>
+      <select name="geo" required style="width:100%;">
+        <option value="US">US</option>
+        <option value="EU">EU</option>
+        <option value="ASIA">ASIA</option>
+      </select>
+    </div>
+    <div style="margin-bottom:8px;">
+      <label>🔢 Port:</label><br>
+      <input type="number" name="port" value="443" min="1" max="65535" required style="width:100%;">
+    </div>
+    <button type="submit" class="btn">📤 Upload & Queue</button>
+  </form>
+
+  <!-- 👇 ДОБАВЛЕНА КНОПКА ОЧИСТИТЬ -->
+  <br>
+  <button hx-post="/clear-masscan"
+          hx-target="#main-content"
+          hx-swap="outerHTML"
+          hx-confirm="⚠️ Очистить ВСЕ задачи сканирования и найденные адреса? Действие необратимо."
+          class="btn"
+          style="background:#d32f2f; margin-top:8px;">
+    🗑️ Очистить
+  </button>
+
+  <div id="upload-feedback" style="margin-top:10px; min-height: 24px;"></div>
+</div>
+
+<!-- 🔻 БЛОК CONTROL УДАЛЁН -->
+
+<div class="card">
+  <h3>📊 Scan Jobs Status</h3>
+  <div id="scan-jobs" hx-get="/scan-jobs-status" hx-trigger="load, every 2s" hx-swap="innerHTML"></div>
+</div>
+
+<style>
+.status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 0.75em;
+  font-weight: bold;
+}
+.pending { background: #333; color: #ccc; }
+.running { background: #3c1a1a; color: #ffcdd2; }
+.completed { background: #1b3a1f; color: #a5d6a7; }
+.failed { background: #5d2121; color: #ffcdd2; }
+</style>

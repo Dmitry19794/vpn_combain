@@ -1,0 +1,61 @@
+#!/bin/bash
+# migrate_db.sh.example — безопасный шаблон (без секретов!)
+# Перед использованием скопируйте в migrate_db.sh и задайте переменные окружения:
+#
+#   export LOCAL_PG_USER=brute
+#   export LOCAL_PG_PASS=securepass123
+#   export REMOTE_PG_USER=brute
+#   export REMOTE_PG_PASS=securepass123
+#   export REMOTE_HOST=213.171.31.97
+#   export PGPORT_LOCAL=5434   # или 5432
+#   export PGPORT_REMOTE=5432
+#
+# Или используй .env файл и `source .env`
+
+set -euo pipefail
+
+# === Настройки (все через переменные окружения) ===
+LOCAL_PG_USER="${LOCAL_PG_USER:-brute}"
+LOCAL_PG_PASS="${LOCAL_PG_PASS:-}"
+LOCAL_DB_NAME="${LOCAL_DB_NAME:-brute_system}"
+PGPORT_LOCAL="${PGPORT_LOCAL:-5432}"
+
+REMOTE_PG_USER="${REMOTE_PG_USER:-brute}"
+REMOTE_PG_PASS="${REMOTE_PG_PASS:-}"
+REMOTE_DB_NAME="${REMOTE_DB_NAME:-brute_system}"
+REMOTE_HOST="${REMOTE_HOST:-213.171.31.97}"
+PGPORT_REMOTE="${PGPORT_REMOTE:-5432}"
+
+DUMP_FILE="${DUMP_FILE:-brute_system.sql}"
+
+# === Функции ===
+log() { echo "[$(date +%H:%M:%S)] $*"; }
+
+# === 1. Дамп локальной БД ===
+log "🔧 Dumping local database \"\$LOCAL_DB_NAME\" from port \$PGPORT_LOCAL..."
+export PGPASSWORD="\$LOCAL_PG_PASS"
+pg_dump -h localhost -p "\$PGPORT_LOCAL" -U "\$LOCAL_PG_USER" -d "\$LOCAL_DB_NAME" --no-owner --no-privileges -f "\$DUMP_FILE"
+log "✅ Local dump saved to \$DUMP_FILE"
+
+# === 2. Копирование на удалённый сервер ===
+log "📤 Transferring dump to \$REMOTE_HOST..."
+scp -o ServerAliveInterval=30 "\$DUMP_FILE" "admin@\$REMOTE_HOST:/tmp/"
+
+# === 3. Восстановление на удалённом сервере ===
+log "🔄 Restoring on remote server \$REMOTE_HOST..."
+ssh -o ServerAliveInterval=30 "admin@\$REMOTE_HOST" << REMOTE_SSH
+  set -euo pipefail
+  export PGPASSWORD="\$REMOTE_PG_PASS"
+
+  # Создаём роль, если не существует
+  sudo -u postgres psql -p \$PGPORT_REMOTE -c "CREATE USER \$REMOTE_PG_USER WITH PASSWORD '\$REMOTE_PG_PASS' SUPERUSER;" 2>/dev/null || true
+
+  # Создаём БД, если не существует
+  sudo -u postgres psql -p \$PGPORT_REMOTE -c "CREATE DATABASE \$REMOTE_DB_NAME OWNER \$REMOTE_PG_USER;" 2>/dev/null || true
+
+  # Восстанавливаем дамп
+  psql -h localhost -p \$PGPORT_REMOTE -U \$REMOTE_PG_USER -d \$REMOTE_DB_NAME -f /tmp/\$DUMP_FILE
+  rm -f /tmp/\$DUMP_FILE
+REMOTE_SSH
+
+log "✅ Migration completed!"

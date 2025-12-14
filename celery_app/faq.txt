@@ -1,0 +1,267 @@
+# ============================================
+# start_celery_worker.sh
+# Запуск Celery worker для сканирования
+# ============================================
+#!/bin/bash
+
+# Переходим в директорию с приложением
+cd /home/argentum/GolandProjects/vpn/vpn/celery_app
+
+# Активируем виртуальное окружение (если используется)
+# source venv/bin/activate
+
+#pip install --upgrade pip setuptools wheel
+#pip install celery[redis]==5.3.4
+#pip install fastapi==0.104.1 uvicorn==0.24.0 redis==5.0.1 \
+            #psycopg2-binary==2.9.9 psutil==5.9.6 flower==2.0.1 \
+            #jinja2==3.1.2 python-multipart==0.0.6
+
+# Запускаем Celery worker
+celery -A tasks worker \
+    --loglevel=info \
+    --concurrency=4 \
+    --hostname=scanner@%h \
+    --queues=default \
+    --max-tasks-per-child=50 \
+    --time-limit=3600 \
+    --soft-time-limit=3300
+
+# ============================================
+# start_celery_beat.sh
+# Запуск Celery beat для периодических задач
+# ============================================
+#!/bin/bash
+
+cd /home/argentum/GolandProjects/vpn/vpn/celery_app
+
+# source venv/bin/activate
+
+celery -A tasks beat \
+    --loglevel=info \
+    --scheduler=celery.beat:PersistentScheduler
+
+# ============================================
+# start_flower.sh
+# Запуск Flower для мониторинга Celery
+# ============================================
+#!/bin/bash
+
+cd /home/argentum/GolandProjects/vpn/vpn/celery_app
+
+# source venv/bin/activate
+
+celery -A tasks flower \
+    --port=5555 \
+    --broker=redis://localhost:6379/0
+
+# Flower будет доступен на http://localhost:5555
+
+# ============================================
+# start_fastapi.sh
+# Запуск FastAPI приложения
+# ============================================
+#!/bin/bash
+
+cd /home/argentum/GolandProjects/vpn/vpn/web
+
+# source venv/bin/activate
+
+uvicorn main:app \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --reload
+
+# ============================================
+# systemd service файлы
+# ============================================
+
+# /etc/systemd/system/celery-worker.service
+cat > /tmp/celery-worker.service << 'EOF'
+[Unit]
+Description=Celery Worker for VPN Scanner
+After=network.target redis.service postgresql.service
+
+[Service]
+Type=forking
+User=argentum
+Group=argentum
+WorkingDirectory=/home/argentum/GolandProjects/vpn/vpn/celery_app
+ExecStart=/usr/local/bin/celery -A tasks worker \
+    --loglevel=info \
+    --concurrency=4 \
+    --hostname=scanner@%%h \
+    --pidfile=/var/run/celery/worker.pid \
+    --logfile=/var/log/celery/worker.log
+ExecStop=/bin/kill -TERM $MAINPID
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# /etc/systemd/system/celery-beat.service
+cat > /tmp/celery-beat.service << 'EOF'
+[Unit]
+Description=Celery Beat Scheduler
+After=network.target redis.service
+
+[Service]
+Type=simple
+User=argentum
+Group=argentum
+WorkingDirectory=/home/argentum/GolandProjects/vpn/vpn/celery_app
+ExecStart=/usr/local/bin/celery -A tasks beat \
+    --loglevel=info \
+    --pidfile=/var/run/celery/beat.pid \
+    --logfile=/var/log/celery/beat.log
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# /etc/systemd/system/fastapi-vpn.service
+cat > /tmp/fastapi-vpn.service << 'EOF'
+[Unit]
+Description=FastAPI VPN Web Interface
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=argentum
+Group=argentum
+WorkingDirectory=/home/argentum/GolandProjects/vpn/vpn/web
+ExecStart=/usr/local/bin/uvicorn main:app \
+    --host 0.0.0.0 \
+    --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# ============================================
+# install_services.sh
+# Установка systemd сервисов
+# ============================================
+#!/bin/bash
+
+# Создаём необходимые директории
+sudo mkdir -p /var/run/celery
+sudo mkdir -p /var/log/celery
+sudo chown -R argentum:argentum /var/run/celery
+sudo chown -R argentum:argentum /var/log/celery
+
+# Копируем service файлы
+sudo cp /tmp/celery-worker.service /etc/systemd/system/
+sudo cp /tmp/celery-beat.service /etc/systemd/system/
+sudo cp /tmp/fastapi-vpn.service /etc/systemd/system/
+
+# Перезагружаем systemd
+sudo systemctl daemon-reload
+
+# Включаем автозапуск
+sudo systemctl enable celery-worker
+sudo systemctl enable celery-beat
+sudo systemctl enable fastapi-vpn
+
+# Запускаем сервисы
+sudo systemctl start celery-worker
+sudo systemctl start celery-beat
+sudo systemctl start fastapi-vpn
+
+# Проверяем статус
+sudo systemctl status celery-worker
+sudo systemctl status celery-beat
+sudo systemctl status fastapi-vpn
+
+echo "✅ Services installed and started"
+echo "📊 Monitor with: sudo journalctl -u celery-worker -f"
+echo "🌸 Flower UI: celery -A tasks flower --port=5555"
+
+# ============================================
+# requirements.txt
+# Зависимости Python
+# ============================================
+cat > /tmp/requirements.txt << 'EOF'
+fastapi==0.104.1
+uvicorn==0.24.0
+celery==5.3.4
+redis==5.0.1
+psycopg2-binary==2.9.9
+psutil==5.9.6
+flower==2.0.1
+jinja2==3.1.2
+python-multipart==0.0.6
+EOF
+
+# ============================================
+# install_dependencies.sh
+# Установка зависимостей
+# ============================================
+#!/bin/bash
+
+# Обновляем систему
+sudo apt update
+
+# Устанавливаем Redis
+sudo apt install -y redis-server
+sudo systemctl enable redis-server
+sudo systemctl start redis-server
+
+# Устанавливаем Python зависимости
+pip install -r requirements.txt
+
+# Проверяем Redis
+redis-cli ping  # Должно вернуть PONG
+
+echo "✅ Dependencies installed"
+
+# ============================================
+# monitor.sh
+# Мониторинг всех сервисов
+# ============================================
+#!/bin/bash
+
+echo "=== VPN Scanner System Status ==="
+echo ""
+
+echo "📊 PostgreSQL:"
+sudo systemctl status postgresql --no-pager | grep "Active:"
+echo ""
+
+echo "🔴 Redis:"
+sudo systemctl status redis-server --no-pager | grep "Active:"
+redis-cli ping
+echo ""
+
+echo "👷 Celery Worker:"
+sudo systemctl status celery-worker --no-pager | grep "Active:"
+celery -A tasks inspect active 2>/dev/null | grep -E "^\[|  - " || echo "No active tasks"
+echo ""
+
+echo "⏰ Celery Beat:"
+sudo systemctl status celery-beat --no-pager | grep "Active:"
+echo ""
+
+echo "🌐 FastAPI:"
+sudo systemctl status fastapi-vpn --no-pager | grep "Active:"
+curl -s http://localhost:8000/ > /dev/null && echo "✅ HTTP OK" || echo "❌ HTTP FAIL"
+echo ""
+
+echo "📈 Database Stats:"
+psql -U brute -d brute_system -h localhost -p 5434 << 'SQL'
+SELECT 
+    (SELECT COUNT(*) FROM scan_jobs WHERE status = 'pending') as pending_jobs,
+    (SELECT COUNT(*) FROM scan_jobs WHERE status = 'running') as running_jobs,
+    (SELECT COUNT(*) FROM scan_jobs WHERE status = 'completed') as completed_jobs,
+    (SELECT COUNT(*) FROM scanned_addresses WHERE is_checked = false) as unchecked_addresses,
+    (SELECT COUNT(*) FROM vpns) as total_vpns;
+SQL
+
+echo ""
+echo "🌸 Flower UI: http://localhost:5555"
+echo "📱 FastAPI: http://localhost:8000"

@@ -1,0 +1,22 @@
+[Unit]
+Description=Celery Worker for VPN Scanner
+After=network.target redis.service postgresql.service
+
+[Service]
+Type=forking
+User=argentum
+Group=argentum
+WorkingDirectory=/home/argentum/GolandProjects/vpn/vpn/celery_app
+ExecStart=/usr/local/bin/celery -A tasks worker \
+    --loglevel=info \
+    --concurrency=4 \
+    --hostname=scanner@%h \
+    --pidfile=/var/run/celery/worker.pid \
+    --logfile=/var/log/celery/worker.log
+ExecStop=/bin/kill -TERM $MAINPID
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+

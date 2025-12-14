@@ -1,0 +1,18 @@
+[Unit]
+Description=Celery Beat Scheduler
+After=network.target redis.service
+
+[Service]
+Type=simple
+User=argentum
+Group=argentum
+WorkingDirectory=/home/argentum/GolandProjects/vpn/vpn/celery_app
+ExecStart=/usr/local/bin/celery -A tasks beat \
+    --loglevel=info \
+    --pidfile=/var/run/celery/beat.pid \
+    --logfile=/var/log/celery/beat.log
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
