@@ -1,373 +1,611 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
-	"flag"
-	"fmt"
-	"io"
-	"net"
-	"net/http"
-	"net/url"
-	"os"
-	"regexp"
-	"strings"
-	"sync"
-	"time"
+    "bytes"
+    "context"
+    "crypto/tls"
+    "encoding/json"
+    "fmt"
+    "io"
+    "log"
+    "net"
+    "net/http"
+    "net/url"
+    "regexp"
+    "strconv"
+    "strings"
+    "sync"
+    "sync/atomic"
+    "time"
+
+    socks "golang.org/x/net/proxy"
 )
 
+// ============================================
+// Структуры
+// ============================================
+
 type Proxy struct {
-	ID          string `json:"id,omitempty"`
-	Host        string `json:"host"`
-	Port        string `json:"port"`
-	Protocol    string `json:"protocol,omitempty"`
-	IsWorking   bool   `json:"is_alive"`
-	Speed       time.Duration
-	SpeedMs     int    `json:"speed_ms"`
-	LastCheck   time.Time `json:"last_check,omitempty"`
-	Country     string `json:"geo"`
-	Geo         string `json:"-"`
-	Anonymity   string `json:"anonymity,omitempty"`
-	ChecksPassed int   `json:"checks_passed,omitempty"`
+    Host      string `json:"host"`
+    Port      int    `json:"port"`
+    Protocol  string `json:"protocol"`
+    Geo       string `json:"geo"`
+    Anonymity string `json:"anonymity"`
+    SpeedMs   int    `json:"speed_ms"`
+    IsAlive   bool   `json:"is_alive"`
 }
 
-type ProxyCrawler struct {
-	proxies     map[string]*Proxy
-	mu          sync.RWMutex
-	sources     []string
-	checkURLs   []string
-	timeout     time.Duration
-	workerCount int
-	realIP      string
+type GeoInfo struct {
+    Status      string `json:"status"`
+    Country     string `json:"country"`
+    CountryCode string `json:"countryCode"`
+    Region      string `json:"region"`
+    City        string `json:"city"`
+    ISP         string `json:"isp"`
+    Query       string `json:"query"`
 }
 
-func NewProxyCrawler() *ProxyCrawler {
-	pc := &ProxyCrawler{
-		proxies: make(map[string]*Proxy),
-		sources: []string{
-			"https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
-			"https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",
-			"https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
-			"https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
-			"https://raw.githubusercontent.com/prxchk/proxy-list/main/http.txt",
-			"https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt",
-			"https://raw.githubusercontent.com/sunny9577/proxy-scraper/master/proxies.txt",
-			"https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
-			"https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/xResults/RAW.txt",
-			"https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/http.txt",
-			"https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/https.txt",
-			"https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/http/data.txt",
-			"https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/all/data.txt",
-			"https://api.proxyscrape.com/v3/free-proxy-list/get?request=displayproxies&proxy_format=protocolipport&format=text",
-			"https://www.proxy-list.download/api/v1/get?type=http",
-			"https://api.proxyscrape.com/v2/?request=get&protocol=http&timeout=10000&country=all",
-		},
-		checkURLs: []string{
-			"http://api.ipify.org",
-			"http://icanhazip.com",
-		},
-		timeout:     3 * time.Second,
-		workerCount: 300,
-	}
-	pc.realIP = pc.getRealIP()
-	return pc
+type CheckResult struct {
+    Proxy   *Proxy
+    Success bool
+    Error   string
 }
 
-func (pc *ProxyCrawler) getRealIP() string {
-	resp, err := http.Get("http://api.ipify.org")
-	if err != nil {
-		return ""
-	}
-	defer resp.Body.Close()
+type ProxyChecker struct {
+    realIP           string
+    sources          []string
+    timeout          time.Duration
+    workerCount      int
+    socksDialerCache map[string]socks.Dialer
+    cacheMu          sync.RWMutex
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return ""
-	}
-	ip := strings.TrimSpace(string(body))
-	fmt.Fprintln(os.Stdout, "Ваш реальный IP:", ip)
-	return ip
+    // Статистика
+    checked   int32
+    alive     int32
+    dead      int32
+    startTime time.Time
 }
 
-func (pc *ProxyCrawler) RecheckFromDB() {
-	fmt.Fprintln(os.Stdout, "🔁 Начинаем ревалидацию прокси из БД...")
+// ============================================
+// Конструктор
+// ============================================
 
-	resp, err := http.Get("http://localhost:8000/api/proxy-list-all?limit=100000")
-	if err != nil {
-		fmt.Fprintf(os.Stdout, "❌ Не удалось получить прокси из БД: %v\n", err)
-		return
-	}
-	defer resp.Body.Close()
+func NewProxyChecker() *ProxyChecker {
+    return &ProxyChecker{
+        sources: []string{
+            // SOCKS5
+            "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt",
+            "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks5.txt",
+            "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt",
+            "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt",
+            "https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks5.txt",
+            "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=socks5",
+            "https://www.proxy-list.download/api/v1/get?type=socks5",
 
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		fmt.Fprintf(os.Stdout, "❌ API вернул статус %d: %s\n", resp.StatusCode, string(body))
-		return
-	}
-
-	var data struct {
-		Proxies []Proxy `json:"proxies"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		fmt.Fprintf(os.Stdout, "❌ Ошибка парсинга JSON: %v\n", err)
-		return
-	}
-
-	fmt.Fprintf(os.Stdout, "📥 Получено %d прокси из БД\n", len(data.Proxies))
-	if len(data.Proxies) == 0 {
-		fmt.Fprintln(os.Stdout, "ℹ️  В БД нет прокси — пропускаем ревалидацию")
-		return
-	}
-
-	var wg sync.WaitGroup
-	proxyChan := make(chan *Proxy, 1000)
-
-	for i := 0; i < pc.workerCount; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for p := range proxyChan {
-				pc.checkProxyAndUpdate(p)
-			}
-		}()
-	}
-
-	for i, p := range data.Proxies {
-		proxy := &Proxy{
-			Host:      p.Host,
-			Port:      p.Port,
-			Protocol:  "http",
-			Country:   p.Country,
-			Anonymity: p.Anonymity,
-			Speed:     time.Duration(p.SpeedMs) * time.Millisecond,
-		}
-		proxyChan <- proxy
-
-		if (i+1)%1000 == 0 {
-			fmt.Fprintf(os.Stdout, "📤 Отправлено на проверку: %d/%d\n", i+1, len(data.Proxies))
-		}
-	}
-	close(proxyChan)
-	wg.Wait()
-
-	fmt.Fprintln(os.Stdout, "✅ Ревалидация завершена: в БД остались только живые прокси")
+            // HTTP
+            "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
+            "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt",
+            "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt",
+            "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
+            "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt",
+            "https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/http.txt",
+            "https://api.proxyscrape.com/v3/free-proxy-list/get?request=displayproxies&format=text",
+            "https://www.proxy-list.download/api/v1/get?type=http",
+        },
+        timeout:     6 * time.Second,
+        workerCount: 64, // ← оптимально для 4 ГБ RAM
+        socksDialerCache: make(map[string]socks.Dialer),
+    }
 }
 
-func (pc *ProxyCrawler) checkProxyAndUpdate(proxy *Proxy) {
-	proxyURL, err := url.Parse(fmt.Sprintf("http://%s:%s", proxy.Host, proxy.Port))
-	if err != nil {
-		return
-	}
+// ============================================
+// Проверка порта
+// ============================================
 
-	client := &http.Client{
-		Transport: &http.Transport{
-			Proxy: http.ProxyURL(proxyURL),
-			DialContext: (&net.Dialer{
-				Timeout:   3 * time.Second,
-				KeepAlive: 0,
-			}).DialContext,
-			DisableKeepAlives:     true,
-			MaxIdleConns:          1,
-			IdleConnTimeout:       1 * time.Second,
-			TLSHandshakeTimeout:   3 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-		},
-		Timeout: 3 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-
-	var proxyIP string
-	var speeds []time.Duration
-	attemptPassed := 0
-
-	for _, checkURL := range pc.checkURLs {
-		attemptStart := time.Now()
-		resp, err := client.Get(checkURL)
-		if err != nil {
-			continue
-		}
-
-		body, err := io.ReadAll(io.LimitReader(resp.Body, 10240))
-		resp.Body.Close()
-
-		if err != nil || resp.StatusCode != 200 {
-			continue
-		}
-
-		ip := strings.TrimSpace(string(body))
-		if len(ip) > 7 && len(ip) < 50 && strings.Contains(ip, ".") {
-			if proxyIP == "" {
-				proxyIP = ip
-			}
-			if ip != pc.realIP && ip != "" {
-				attemptPassed++
-				speeds = append(speeds, time.Since(attemptStart))
-			}
-		}
-	}
-
-	isAlive := attemptPassed >= 2 && len(speeds) >= 2
-	var avgSpeed time.Duration
-	if isAlive {
-		for _, s := range speeds {
-			avgSpeed += s
-		}
-		avgSpeed /= time.Duration(len(speeds))
-		if avgSpeed > 3*time.Second {
-			isAlive = false
-		}
-	}
-
-	anonymity := "anonymous"
-	if proxyIP == pc.realIP {
-		anonymity = "transparent"
-	}
-	country := pc.getCountry(proxyIP)
-
-	if isAlive {
-		// ✅ Живой → обновляем в БД
-		updatePayload := map[string]interface{}{
-			"host":      proxy.Host,
-			"port":      proxy.Port,
-			"geo":       country,
-			"anonymity": anonymity,
-			"speed_ms":  int(avgSpeed.Milliseconds()),
-			"is_alive":  true,
-		}
-		jsonData, _ := json.Marshal([]map[string]interface{}{updatePayload})
-		http.Post("http://localhost:8000/api/proxy-batch-update", "application/json", bytes.NewBuffer(jsonData))
-
-		fmt.Fprintf(os.Stdout, "✅ %s:%s | %s | %s | %v\n",
-			proxy.Host, proxy.Port, country, anonymity, avgSpeed.Round(time.Millisecond))
-	} else {
-		// ❌ Мёртвый → УДАЛЯЕМ из БД
-		deletePayload := []map[string]interface{}{{
-			"host": proxy.Host,
-			"port": proxy.Port,
-		}}
-		jsonData, _ := json.Marshal(deletePayload)
-		http.Post("http://localhost:8000/api/proxy-delete", "application/json", bytes.NewBuffer(jsonData))
-
-		fmt.Fprintf(os.Stdout, "❌ %s:%s\n", proxy.Host, proxy.Port)
-	}
+func isValidProxyPort(port int, proto string) bool {
+    if port < 1 || port > 65535 {
+        return false
+    }
+    // Известные прокси-порты
+    common := map[int]bool{
+        80: true, 8080: true, 3128: true, 8888: true, // HTTP
+        1080: true, 9050: true, 9150: true, 4145: true, // SOCKS
+    }
+    if common[port] {
+        return true
+    }
+    // Диапазоны: разрешаем 1024–9999 и 50001–65535, но блокируем 10000–50000 (часто масс-скан/мусор)
+    if port >= 1024 && port <= 9999 {
+        return true
+    }
+    if port >= 50001 && port <= 65535 {
+        return true
+    }
+    return false
 }
 
-func (pc *ProxyCrawler) getCountry(ip string) string {
-	return "unknown"
+// ============================================
+// Главный цикл
+// ============================================
+
+func (pc *ProxyChecker) Run() {
+    log.Println("🚀 Proxy Checker запущен")
+    log.Println("📊 Воркеров:", pc.workerCount)
+
+    pc.getRealIP()
+
+    for {
+        log.Println("\n" + strings.Repeat("=", 60))
+        log.Println("🔄 НАЧАЛО ЦИКЛА ПРОВЕРКИ")
+        log.Println(strings.Repeat("=", 60))
+
+        pc.startTime = time.Now()
+        atomic.StoreInt32(&pc.checked, 0)
+        atomic.StoreInt32(&pc.alive, 0)
+        atomic.StoreInt32(&pc.dead, 0)
+
+        log.Println("\n1️⃣ Сбор прокси...")
+        scrapedProxies := pc.collectProxies()
+        log.Printf("   ✅ Собрано %d новых прокси\n", len(scrapedProxies))
+
+        log.Println("\n2️⃣ Загрузка из БД...")
+        dbProxies := pc.getProxiesFromDB()
+        log.Printf("   ✅ Загружено %d из БД\n", len(dbProxies))
+
+        log.Println("\n3️⃣ Объединение и фильтрация...")
+        allProxies := pc.mergeAndDeduplicate(scrapedProxies, dbProxies)
+        log.Printf("   ✅ Всего уникальных: %d\n", len(allProxies))
+
+        if len(allProxies) == 0 {
+            log.Println("   ⚠️ Нет прокси")
+            time.Sleep(10 * time.Minute)
+            continue
+        }
+
+        log.Println("\n4️⃣ Проверка...")
+        alive, dead := pc.checkAllProxiesParallel(allProxies)
+
+        elapsed := time.Since(pc.startTime)
+        rate := float64(len(allProxies)) / elapsed.Seconds()
+        log.Printf("\n   ✅ Живых: %d | ❌ Мёртвых: %d | ⏱️ %v | 📈 %.1f прокси/сек\n",
+            len(alive), len(dead), elapsed.Round(time.Second), rate)
+
+        log.Println("\n5️⃣ Обновление БД...")
+        pc.updateDatabase(alive, dead)
+
+        log.Println("\n💤 Сон 10 мин...")
+        time.Sleep(10 * time.Minute)
+    }
 }
 
-// collectProxies и sendNewProxiesToDB оставлены для совместимости
-func (pc *ProxyCrawler) collectProxies() []*Proxy {
-	var allProxies []*Proxy
-	var mu sync.Mutex
-	var wg sync.WaitGroup
+// ============================================
+// Сбор и парсинг
+// ============================================
 
-	for i, src := range pc.sources {
-		wg.Add(1)
-		go func(idx int, url string) {
-			defer wg.Done()
-			proxies := pc.fetchFromSource(url)
-			if len(proxies) > 0 {
-				mu.Lock()
-				allProxies = append(allProxies, proxies...)
-				mu.Unlock()
-			}
-		}(i, src)
-	}
-	wg.Wait()
-	return allProxies
+func (pc *ProxyChecker) collectProxies() []*Proxy {
+    var all []*Proxy
+    var mu sync.Mutex
+    var wg sync.WaitGroup
+
+    for _, src := range pc.sources {
+        wg.Add(1)
+        go func(url string) {
+            defer wg.Done()
+            proxies := pc.fetchFromSource(url)
+            if len(proxies) > 0 {
+                mu.Lock()
+                all = append(all, proxies...)
+                mu.Unlock()
+                log.Printf("   📥 %d из %s", len(proxies), shortURL(url))
+            }
+        }(src)
+    }
+    wg.Wait()
+    return all
 }
 
-func (pc *ProxyCrawler) sendNewProxiesToDB(proxies []*Proxy) {
-	if len(proxies) == 0 {
-		return
-	}
-
-	batch := make([]map[string]interface{}, 0, 500)
-	for _, p := range proxies {
-		batch = append(batch, map[string]interface{}{
-			"host":      p.Host,
-			"port":      p.Port,
-			"geo":       "??",
-			"anonymity": "unknown",
-			"speed_ms":  0,
-			"is_alive":  false,
-		})
-		if len(batch) >= 500 {
-			pc.sendBatchToAPI(batch)
-			batch = batch[:0]
-		}
-	}
-	if len(batch) > 0 {
-		pc.sendBatchToAPI(batch)
-	}
+func shortURL(u string) string {
+    if len(u) <= 40 {
+        return u
+    }
+    return "..." + u[len(u)-37:]
 }
 
-func (pc *ProxyCrawler) sendBatchToAPI(batch []map[string]interface{}) {
-	data, _ := json.Marshal(batch)
-	http.Post("http://localhost:8000/api/proxy-batch", "application/json", bytes.NewBuffer(data))
+func (pc *ProxyChecker) fetchFromSource(url string) []*Proxy {
+    client := &http.Client{Timeout: 15 * time.Second}
+    resp, err := client.Get(url)
+    if err != nil || resp == nil || resp.StatusCode != 200 {
+        return nil
+    }
+    defer resp.Body.Close()
+
+    body, _ := io.ReadAll(resp.Body)
+    return pc.parseProxies(string(body), url)
 }
 
-func (pc *ProxyCrawler) fetchFromSource(sourceURL string) []*Proxy {
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Get(sourceURL)
-	if err != nil {
-		return nil
-	}
-	defer resp.Body.Close()
+func (pc *ProxyChecker) parseProxies(content string, sourceURL string) []*Proxy {
+    re := regexp.MustCompile(`(\d+\.\d+\.\d+\.\d+):(\d{2,5})`)
+    matches := re.FindAllStringSubmatch(content, -1)
 
-	if resp.StatusCode != 200 {
-		return nil
-	}
+    var proxies []*Proxy
+    seen := make(map[string]bool)
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil
-	}
-	return pc.parseProxies(string(body))
+    proto := "http"
+    if strings.Contains(strings.ToLower(sourceURL), "socks5") {
+        proto = "socks5"
+    }
+
+    for _, m := range matches {
+        if len(m) < 3 {
+            continue
+        }
+        host, portStr := m[1], m[2]
+        port, err := strconv.Atoi(portStr)
+        if err != nil {
+            continue
+        }
+        key := fmt.Sprintf("%s:%d", host, port)
+        if seen[key] {
+            continue
+        }
+
+        // ← Фильтр портов
+        if !isValidProxyPort(port, proto) {
+            continue
+        }
+
+        seen[key] = true
+        proxies = append(proxies, &Proxy{
+            Host:     host,
+            Port:     port,
+            Protocol: proto,
+        })
+    }
+    return proxies
 }
 
-func (pc *ProxyCrawler) parseProxies(content string) []*Proxy {
-	re := regexp.MustCompile(`(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d{2,5})`)
-	matches := re.FindAllStringSubmatch(content, -1)
+// ============================================
+// Загрузка из БД
+// ============================================
 
-	var proxies []*Proxy
-	seen := make(map[string]bool)
+func (pc *ProxyChecker) getProxiesFromDB() []*Proxy {
+    resp, err := http.Get("http://localhost:8000/api/proxy-list-all?limit=100000")
+    if err != nil || resp.StatusCode != 200 {
+        log.Println("   ⚠️ DB load error:", err)
+        return nil
+    }
+    defer resp.Body.Close()
 
-	for _, match := range matches {
-		if len(match) >= 3 {
-			host := match[1]
-			port := match[2]
-			key := host + ":" + port
-			if !seen[key] {
-				seen[key] = true
-				proxies = append(proxies, &Proxy{
-					Host:     host,
-					Port:     port,
-					Protocol: "http",
-				})
-			}
-		}
-	}
-	return proxies
+    var data struct{ Proxies []Proxy }
+    if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+        log.Println("   ⚠️ DB JSON error:", err)
+        return nil
+    }
+
+    result := make([]*Proxy, len(data.Proxies))
+    for i := range data.Proxies {
+        result[i] = &data.Proxies[i]
+    }
+    return result
 }
+
+// ============================================
+// Объединение
+// ============================================
+
+func (pc *ProxyChecker) mergeAndDeduplicate(scraped, fromDB []*Proxy) []*Proxy {
+    unique := make(map[string]*Proxy)
+
+    for _, p := range fromDB {
+        key := fmt.Sprintf("%s:%d", p.Host, p.Port)
+        unique[key] = p
+    }
+    for _, p := range scraped {
+        key := fmt.Sprintf("%s:%d", p.Host, p.Port)
+        if _, exists := unique[key]; !exists {
+            unique[key] = p
+        }
+    }
+
+    result := make([]*Proxy, 0, len(unique))
+    for _, p := range unique {
+        result = append(result, p)
+    }
+    return result
+}
+
+// ============================================
+// Проверка (оптимизированная)
+// ============================================
+
+func (pc *ProxyChecker) checkAllProxiesParallel(proxies []*Proxy) ([]*Proxy, []*Proxy) {
+    results := make(chan CheckResult, len(proxies))
+    queue := make(chan *Proxy, len(proxies))
+    for _, p := range proxies {
+        queue <- p
+    }
+    close(queue)
+
+    var wg sync.WaitGroup
+    for i := 0; i < pc.workerCount; i++ {
+        wg.Add(1)
+        go pc.worker(queue, results, &wg)
+    }
+
+    go func() {
+        wg.Wait()
+        close(results)
+    }()
+
+    var alive, dead []*Proxy
+    for res := range results {
+        if res.Success {
+            alive = append(alive, res.Proxy)
+        } else {
+            dead = append(dead, res.Proxy)
+        }
+    }
+    return alive, dead
+}
+
+func (pc *ProxyChecker) worker(queue <-chan *Proxy, results chan<- CheckResult, wg *sync.WaitGroup) {
+    defer wg.Done()
+    for proxy := range queue {
+        results <- pc.checkProxy(proxy)
+
+        checked := atomic.AddInt32(&pc.checked, 1)
+        if checked%100 == 0 {
+            alive := atomic.LoadInt32(&pc.alive)
+            dead := atomic.LoadInt32(&pc.dead)
+            log.Printf("   📊 %d | ✅ %d | ❌ %d", checked, alive, dead)
+        }
+    }
+}
+
+func (pc *ProxyChecker) checkProxy(proxy *Proxy) CheckResult {
+    var client *http.Client
+    var proxyIP string
+    successCount := 0
+
+    protocol := strings.ToLower(proxy.Protocol)
+    switch protocol {
+    case "http", "https":
+        u, err := url.Parse(fmt.Sprintf("http://%s:%d", proxy.Host, proxy.Port))
+        if err != nil {
+            return CheckResult{Proxy: proxy, Success: false, Error: "url parse"}
+        }
+        client = &http.Client{
+            Transport: &http.Transport{
+                Proxy: http.ProxyURL(u),
+                DialContext: (&net.Dialer{
+                    Timeout:   pc.timeout,
+                    KeepAlive: 0,
+                }).DialContext,
+                DisableKeepAlives:     true,
+                MaxIdleConns:          1,
+                TLSHandshakeTimeout:   pc.timeout,
+                ResponseHeaderTimeout: pc.timeout,
+                IdleConnTimeout:       1 * time.Second,
+                TLSClientConfig: &tls.Config{
+                    InsecureSkipVerify: false,
+                },
+            },
+            Timeout: pc.timeout,
+        }
+
+    case "socks5":
+        key := fmt.Sprintf("socks5://%s:%d", proxy.Host, proxy.Port)
+
+        pc.cacheMu.RLock()
+        dialer, ok := pc.socksDialerCache[key]
+        pc.cacheMu.RUnlock()
+
+        if !ok {
+            pc.cacheMu.Lock()
+            if d, exists := pc.socksDialerCache[key]; exists {
+                dialer = d
+            } else {
+                var err error
+                dialer, err = socks.SOCKS5("tcp", fmt.Sprintf("%s:%d", proxy.Host, proxy.Port), nil, &net.Dialer{
+                    Timeout:   pc.timeout,
+                    KeepAlive: 0,
+                })
+                if err != nil {
+                    pc.cacheMu.Unlock()
+                    return CheckResult{Proxy: proxy, Success: false, Error: "socks5 init"}
+                }
+                pc.socksDialerCache[key] = dialer
+            }
+            pc.cacheMu.Unlock()
+        }
+
+        client = &http.Client{
+            Transport: &http.Transport{
+                DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+                    return dialer.Dial(network, addr)
+                },
+                DisableKeepAlives:     true,
+                MaxIdleConns:          1,
+                TLSHandshakeTimeout:   pc.timeout,
+                ResponseHeaderTimeout: pc.timeout,
+                IdleConnTimeout:       1 * time.Second,
+                TLSClientConfig: &tls.Config{
+                    InsecureSkipVerify: false,
+                },
+            },
+            Timeout: pc.timeout,
+        }
+
+    default:
+        return CheckResult{Proxy: proxy, Success: false, Error: "unknown proto"}
+    }
+
+    // ← Только 2 проверки: быстрая + надёжная
+    targets := []string{
+        "http://api.ipify.org",
+        "https://httpbin.org/ip",
+    }
+
+    for _, rawURL := range targets {
+        resp, err := client.Get(rawURL)
+        var ip string
+        ok := false
+
+        if err == nil && resp != nil && resp.StatusCode == 200 {
+            body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+            resp.Body.Close()
+
+            if strings.Contains(rawURL, "httpbin") {
+                var data struct{ Origin string }
+                if json.Unmarshal(body, &data) == nil {
+                    ip = strings.TrimSpace(strings.Split(data.Origin, ",")[0])
+                    ok = net.ParseIP(ip) != nil
+                }
+            } else {
+                ip = strings.TrimSpace(string(body))
+                ok = net.ParseIP(ip) != nil
+            }
+
+            if ok && ip != pc.realIP {
+                successCount++
+                if proxyIP == "" {
+                    proxyIP = ip
+                }
+            }
+        }
+    }
+
+    // ← Оба запроса должны дать foreign IP
+    if successCount < 2 {
+        return CheckResult{Proxy: proxy, Success: false, Error: "no foreign IP"}
+    }
+
+    anonymity := "anonymous"
+    if proxyIP == "" || proxyIP == pc.realIP {
+        anonymity = "transparent"
+    }
+
+    geo := pc.getGeoInfo(proxyIP)
+    if geo == "" {
+        geo = "XX"
+    }
+
+    proxy.IsAlive = true
+    proxy.SpeedMs = 1000
+    proxy.Anonymity = anonymity
+    proxy.Geo = geo
+
+    atomic.AddInt32(&pc.alive, 1)
+    return CheckResult{Proxy: proxy, Success: true}
+}
+
+// ============================================
+// GEO
+// ============================================
+
+func (pc *ProxyChecker) getGeoInfo(ip string) string {
+    if ip == "" {
+        return "XX"
+    }
+    client := &http.Client{Timeout: 3 * time.Second}
+    resp, err := client.Get("http://ip-api.com/json/" + url.PathEscape(ip))
+    if err != nil || resp == nil || resp.StatusCode != 200 {
+        return "XX"
+    }
+    defer resp.Body.Close()
+
+    var g GeoInfo
+    json.NewDecoder(resp.Body).Decode(&g)
+    if g.Status == "success" && g.CountryCode != "" {
+        return g.CountryCode
+    }
+    return "XX"
+}
+
+func (pc *ProxyChecker) getRealIP() {
+    resp, err := http.Get("http://api.ipify.org")
+    if err != nil {
+        pc.realIP = "127.0.0.1"
+        log.Println("   ⚠️ realIP fallback to 127.0.0.1")
+        return
+    }
+    defer resp.Body.Close()
+    body, _ := io.ReadAll(resp.Body)
+    pc.realIP = strings.TrimSpace(string(body))
+    log.Println("🌐 Real IP:", pc.realIP)
+}
+
+// ============================================
+// Обновление БД
+// ============================================
+
+func (pc *ProxyChecker) updateDatabase(alive, dead []*Proxy) {
+    batchSize := 100
+
+    // Живые
+    for i := 0; i < len(alive); i += batchSize {
+        end := i + batchSize
+        if end > len(alive) {
+            end = len(alive)
+        }
+        batch := alive[i:end]
+        payload := make([]map[string]interface{}, len(batch))
+        for j, p := range batch {
+            payload[j] = map[string]interface{}{
+                "host":      p.Host,
+                "port":      p.Port,
+                "geo":       p.Geo,
+                "anonymity": p.Anonymity,
+                "speed_ms":  p.SpeedMs,
+                "is_alive":  true,
+            }
+        }
+        pc.postToAPI("http://localhost:8000/api/proxy-batch-update", payload)
+    }
+    log.Printf("   ✅ Обновлено живых: %d", len(alive))
+
+    // Мёртвые — помечаем
+    for i := 0; i < len(dead); i += batchSize {
+        end := i + batchSize
+        if end > len(dead) {
+            end = len(dead)
+        }
+        batch := dead[i:end]
+        payload := make([]map[string]interface{}, len(batch))
+        for j, p := range batch {
+            payload[j] = map[string]interface{}{
+                "host":      p.Host,
+                "port":      p.Port,
+                "is_alive":  false,
+                "geo":       "XX",
+                "anonymity": "anonymous",
+                "speed_ms":  0,
+            }
+        }
+        pc.postToAPI("http://localhost:8000/api/proxy-batch-update", payload)
+    }
+    log.Printf("   ❌ Помечено мёртвых: %d", len(dead))
+}
+
+func (pc *ProxyChecker) postToAPI(url string, data interface{}) {
+    jsonData, _ := json.Marshal(data)
+    resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonData))
+    if err != nil {
+        log.Printf("   ⚠️ API error: %v", err)
+        return
+    }
+    resp.Body.Close()
+    if resp.StatusCode != 200 {
+        log.Printf("   ⚠️ API %d", resp.StatusCode)
+    }
+}
+
+// ============================================
+// MAIN
+// ============================================
 
 func main() {
-	fmt.Fprintln(os.Stdout, "=== Proxy Checker (Recheck-Only Mode) ===")
-
-	recheckDB := flag.Bool("recheck-db", false, "Проверить ВСЕ прокси из БД и оставить только живые")
-	flag.Parse()
-
-	crawler := NewProxyCrawler()
-
-	if *recheckDB {
-		fmt.Fprintln(os.Stdout, "🔧 Режим: ревалидация + удаление мёртвых прокси")
-		crawler.RecheckFromDB()
-		return
-	}
-
-	// По умолчанию — ничего не делать. Только --recheck-db работает.
-	fmt.Fprintln(os.Stdout, "ℹ️  Используйте --recheck-db для запуска")
+    log.SetFlags(log.Ltime)
+    checker := NewProxyChecker()
+    checker.Run()
 }
