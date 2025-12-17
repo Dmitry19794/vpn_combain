@@ -13,6 +13,8 @@ import subprocess
 import psycopg2
 import time
 import traceback as tb
+import tempfile
+import ipaddress
 from psycopg2.extras import RealDictCursor, execute_values
 from celery import Celery, Task
 from datetime import datetime
@@ -40,15 +42,13 @@ app.conf.update(
 )
 
 CHUNK_SIZE = 1000
+CIDR_SPLIT_SIZE = 24  # /24 = 256 IP в блоке
 
 # ============================================
 # ЛОГ ОШИБОК
 # ============================================
 def save_worker_error(path: str, error: str, tb_text: Optional[str] = None):
-    """
-    Сохраняет ошибку в таблицу app_errors. Берёт соединение из пула и
-    гарантированно возвращает его.
-    """
+    """Сохраняет ошибку в таблицу app_errors"""
     conn = None
     try:
         conn = get_db()
@@ -81,12 +81,10 @@ def save_worker_error(path: str, error: str, tb_text: Optional[str] = None):
                 conn.rollback()
             except:
                 pass
-            # Не поднимаем исключение выше — логирование ошибок не должно ломать задачу.
             print("❌ FAILED TO INSERT app_errors row:", e)
     except Exception as e:
-        print("❌ FAILED TO SAVE CELERY ERROR (pool error?):", e)
+        print("❌ FAILED TO SAVE CELERY ERROR:", e)
     finally:
-        # Всегда возвращаем соединение в пул, если оно было получено.
         if conn:
             try:
                 db_pool.putconn(conn)
@@ -104,29 +102,22 @@ def get_job_control_status(job_id):
     try:
         conn = get_db()
         cur = conn.cursor()
-
         cur.execute("""
             SELECT control_action
             FROM scan_jobs
             WHERE id = %s
         """, (job_id,))
-
         row = cur.fetchone()
         return row[0] if row else None
-
     except Exception as e:
         print("❌ get_job_control_status error:", e)
         return None
-
     finally:
         if conn:
             db_pool.putconn(conn)
 
 def update_job_progress(job_id: str, progress: float, conn):
-    """
-    Обновляет progress_percent — НЕ делает commit (вызовчик решает).
-    conn — открытое соединение.
-    """
+    """Обновляет progress_percent"""
     try:
         cur = conn.cursor()
         cur.execute("""
@@ -137,7 +128,6 @@ def update_job_progress(job_id: str, progress: float, conn):
     except Exception as e:
         save_worker_error("update_job_progress", str(e), tb.format_exc())
         raise
-
 
 # ============================================
 # Базовый класс для задач (on_failure)
@@ -169,11 +159,9 @@ class MasscanTask(Task):
                     conn.rollback()
                 except:
                     pass
-                print("Failed to update job status in on_failure (db):", e)
-                save_worker_error(path=f"task.on_failure:update:{task_id}", error=str(e), tb_text=tb.format_exc())
+                print("Failed to update job status in on_failure:", e)
         except Exception as e:
-            print("Failed to update job status in on_failure (pool/get):", e)
-            save_worker_error(path=f"task.on_failure:getconn:{task_id}", error=str(e), tb_text=tb.format_exc())
+            print("Failed to get connection in on_failure:", e)
         finally:
             if conn:
                 try:
@@ -184,18 +172,144 @@ class MasscanTask(Task):
                     except:
                         pass
 
-        # Сохраняем саму ошибку
         save_worker_error(path=f"task.on_failure:{task_id}", error=str(exc), tb_text=tb.format_exc())
 
+# ============================================
+# РАБОТА С ПРОКСИ
+# ============================================
+def get_random_proxy(geo: str = None):
+    """Получает случайный живой прокси из БД"""
+    conn = None
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        
+        if geo:
+            cur.execute("""
+                SELECT host, port
+                FROM proxies
+                WHERE is_alive = TRUE AND geo = %s
+                ORDER BY RANDOM()
+                LIMIT 1
+            """, (geo,))
+        else:
+            cur.execute("""
+                SELECT host, port
+                FROM proxies
+                WHERE is_alive = TRUE
+                ORDER BY RANDOM()
+                LIMIT 1
+            """)
+        
+        row = cur.fetchone()
+        if row:
+            return (row[0], row[1])
+        return None
+        
+    except Exception as e:
+        print(f"❌ get_random_proxy error: {e}")
+        return None
+    finally:
+        if conn:
+            try:
+                db_pool.putconn(conn)
+            except:
+                pass
 
-# ============================================
-# ПАРСИНГ РЕЗУЛЬТАТОВ MASSCAN
-# ============================================
-def parse_and_save_results(output_file: str, job_id: str, port: int, geo: str, conn) -> int:
-    """
-    Парсит output_file и вставляет адреса пачками.
-    conn передаётся открытым; функция делает commit/rollback по результатам.
-    """
+def run_nmap_via_proxy(target: str, port: int, proxy_host: str, proxy_port: int, 
+                       output_file: str, timeout: int = 120) -> bool:
+    """Запускает nmap через proxychains"""
+    config_path = None
+    try:
+        # Создаем временный конфиг proxychains
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.conf', delete=False) as f:
+            config_path = f.name
+            f.write(f"""# Proxychains config
+strict_chain
+proxy_dns
+tcp_read_time_out 15000
+tcp_connect_time_out 8000
+
+[ProxyList]
+socks5 {proxy_host} {proxy_port}
+""")
+        
+        print(f"📝 Created proxychains config: {proxy_host}:{proxy_port}")
+        
+        # Команда nmap
+        cmd = [
+            'proxychains4', '-f', config_path, '-q',
+            'nmap',
+            '-p', str(port),
+            '-sT',
+            '-Pn',
+            '--open',
+            '-T4',
+            '--max-retries', '1',
+            '--host-timeout', '30s',
+            '-oG', output_file,
+            target
+        ]
+        
+        print(f"🔍 Running nmap via proxy {proxy_host}:{proxy_port} for {target}:{port}")
+        
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+            returncode = process.returncode
+            
+            if returncode == 0:
+                print(f"✅ Nmap completed for {target}")
+                return True
+            else:
+                print(f"⚠️ Nmap returned code {returncode} for {target}")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            print(f"⏰ Nmap timeout for {target}")
+            process.kill()
+            return False
+            
+    except Exception as e:
+        print(f"❌ run_nmap_via_proxy error: {e}")
+        return False
+        
+    finally:
+        if config_path and os.path.exists(config_path):
+            try:
+                os.remove(config_path)
+            except:
+                pass
+
+def split_cidr_into_blocks(cidr: str, block_size: int = 24) -> List[str]:
+    """Разбивает CIDR на блоки"""
+    try:
+        network = ipaddress.ip_network(cidr, strict=False)
+        
+        if network.prefixlen >= block_size:
+            return [str(network)]
+        
+        subnets = list(network.subnets(new_prefix=block_size))
+        
+        # Ограничение
+        if len(subnets) > 1000:
+            print(f"⚠️ Too many subnets ({len(subnets)}), taking first 1000")
+            subnets = subnets[:1000]
+        
+        return [str(subnet) for subnet in subnets]
+        
+    except Exception as e:
+        print(f"❌ split_cidr error: {e}")
+        return [cidr]
+
+def parse_nmap_results(output_file: str, job_id: str, port: int, geo: str, conn) -> int:
+    """Парсит greppable output nmap"""
     total = 0
     if not os.path.exists(output_file):
         return 0
@@ -204,16 +318,18 @@ def parse_and_save_results(output_file: str, job_id: str, port: int, geo: str, c
         with open(output_file, 'r') as f:
             ips = []
             for line in f:
-                if line.startswith('open'):
-                    parts = line.strip().split()
-                    if len(parts) >= 4:
-                        try:
-                            found_port = int(parts[2])
-                        except:
-                            continue
-                        if found_port == port:
-                            ips.append(parts[3])
-
+                if 'Host:' in line and 'Ports:' in line:
+                    try:
+                        parts = line.split()
+                        host_idx = parts.index('Host:')
+                        ip = parts[host_idx + 1]
+                        
+                        if '/open/' in line:
+                            ips.append(ip)
+                            
+                    except Exception:
+                        continue
+                    
                     if len(ips) >= CHUNK_SIZE:
                         try:
                             count = insert_addresses_batch(conn, ips, port, geo, job_id)
@@ -224,9 +340,9 @@ def parse_and_save_results(output_file: str, job_id: str, port: int, geo: str, c
                                 conn.rollback()
                             except:
                                 pass
-                            save_worker_error(f"parse_and_save_results:chunk:{job_id}", str(e), tb.format_exc())
+                            print(f"❌ Batch insert error: {e}")
                         ips = []
-
+            
             if ips:
                 try:
                     count = insert_addresses_batch(conn, ips, port, geo, job_id)
@@ -237,41 +353,27 @@ def parse_and_save_results(output_file: str, job_id: str, port: int, geo: str, c
                         conn.rollback()
                     except:
                         pass
-                    save_worker_error(f"parse_and_save_results:final:{job_id}", str(e), tb.format_exc())
-
+                    print(f"❌ Final insert error: {e}")
+                    
     except Exception as e:
-        save_worker_error(f"parse_and_save_results:open:{job_id}", str(e), tb.format_exc())
-
+        print(f"❌ parse_nmap_results error: {e}")
+    
     return total
-
 
 # ============================================
 # ОСНОВНАЯ ЗАДАЧА СКАНИРОВАНИЯ
 # ============================================
-@app.task(bind=True, name='tasks.run_masscan')
+@app.task(bind=True, name='tasks.run_masscan', base=MasscanTask)
 def run_masscan(self, job_id: str, cidr: str, port: int, geo: str):
-    """
-    Masscan runner — каждое обращение к БД делает короткое соединение.
-    """
-    print(f"🔍 Starting masscan: {cidr}:{port} (Job={job_id})")
-
-    process = None
-    output_file = f"/tmp/masscan_{job_id}.txt"
-    paused_at = None
-    total_ips = 0
+    """Распределенное сканирование через прокси"""
+    print(f"🔍 Starting distributed scan: {cidr}:{port} (Job={job_id}, GEO={geo})")
+    
     start_time = time.time()
-
+    total_results = 0
+    conn = None
+    
     try:
-        # Оценка объёма адресов
-        try:
-            import ipaddress
-            network = ipaddress.ip_network(cidr, strict=False)
-            total_ips = network.num_addresses
-        except Exception:
-            total_ips = 256
-
-        # Помечаем задачу как running (короткое соединение)
-        conn = None
+        # Помечаем задачу как running
         try:
             conn = get_db()
             cur = conn.cursor()
@@ -286,299 +388,150 @@ def run_masscan(self, job_id: str, cidr: str, port: int, geo: str):
             """, (self.request.id, job_id))
             conn.commit()
         except Exception as e:
-            try:
-                conn.rollback()
-            except:
-                pass
-            save_worker_error(f"run_masscan:set-running:{job_id}", str(e), tb.format_exc())
+            print(f"❌ Error setting running status: {e}")
         finally:
             if conn:
                 try:
                     db_pool.putconn(conn)
                 except:
+                    pass
+            conn = None
+        
+        # Разбиваем на блоки
+        blocks = split_cidr_into_blocks(cidr, CIDR_SPLIT_SIZE)
+        total_blocks = len(blocks)
+        print(f"📊 Split {cidr} into {total_blocks} blocks (/{CIDR_SPLIT_SIZE})")
+        
+        # Ограничиваем
+        if total_blocks > 100:
+            print(f"⚠️ Too many blocks ({total_blocks}), limiting to 100")
+            blocks = blocks[:100]
+            total_blocks = 100
+        
+        # Сканируем каждый блок
+        for i, block in enumerate(blocks):
+            # Проверяем control actions
+            try:
+                conn = get_db()
+                cur = conn.cursor()
+                cur.execute("SELECT control_action FROM scan_jobs WHERE id = %s", (job_id,))
+                row = cur.fetchone()
+                ctrl = row[0] if row else None
+            except Exception as e:
+                print(f"⚠️ Error checking control: {e}")
+                ctrl = None
+            finally:
+                if conn:
                     try:
-                        conn.close()
+                        db_pool.putconn(conn)
                     except:
                         pass
-
-        # Запускаем masscan
-        cmd = [
-            'sudo', 'masscan',
-            cidr,
-            f'-p{port}',
-            '--rate=1000',
-            '--banners',
-            '-oL', output_file
-        ]
-        print(f"📡 Running: {' '.join(cmd)}")
-        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
-        # Сохраняем PID (короткое соединение)
-        conn = None
+                conn = None
+            
+            if ctrl == 'stop':
+                print(f"🛑 Stopping job {job_id}")
+                break
+            
+            # Получаем прокси
+            proxy = get_random_proxy(geo)
+            if not proxy:
+                print(f"⚠️ No proxy for GEO={geo}, skipping {block}")
+                continue
+            
+            proxy_host, proxy_port = proxy
+            output_file = f"/tmp/nmap_{job_id}_{i}.txt"
+            
+            # Запускаем nmap
+            try:
+                success = run_nmap_via_proxy(
+                    target=block,
+                    port=port,
+                    proxy_host=proxy_host,
+                    proxy_port=proxy_port,
+                    output_file=output_file,
+                    timeout=120
+                )
+            except Exception as e:
+                print(f"❌ Nmap error for {block}: {e}")
+                success = False
+            
+            if success:
+                # Парсим результаты
+                try:
+                    conn = get_db()
+                    count = parse_nmap_results(output_file, job_id, port, geo, conn)
+                    conn.commit()
+                    total_results += count
+                    print(f"✅ Block {i+1}/{total_blocks}: found {count} hosts")
+                except Exception as e:
+                    print(f"❌ Parse error for block {i}: {e}")
+                    if conn:
+                        try:
+                            conn.rollback()
+                        except:
+                            pass
+                finally:
+                    if conn:
+                        try:
+                            db_pool.putconn(conn)
+                        except:
+                            pass
+                    conn = None
+            else:
+                print(f"⚠️ Block {i+1}/{total_blocks}: scan failed")
+            
+            # Удаляем временный файл
+            try:
+                if os.path.exists(output_file):
+                    os.remove(output_file)
+            except:
+                pass
+            
+            # Обновляем прогресс
+            progress = ((i + 1) / total_blocks) * 100
+            try:
+                conn = get_db()
+                cur = conn.cursor()
+                cur.execute("""
+                    UPDATE scan_jobs
+                    SET progress_percent = %s,
+                        result_count = %s
+                    WHERE id = %s
+                """, (progress, total_results, job_id))
+                conn.commit()
+            except Exception as e:
+                print(f"⚠️ Progress update error: {e}")
+            finally:
+                if conn:
+                    try:
+                        db_pool.putconn(conn)
+                    except:
+                        pass
+                conn = None
+            
+            # Celery meta
+            try:
+                elapsed = time.time() - start_time
+                self.update_state(
+                    state='PROGRESS',
+                    meta={
+                        'job_id': job_id,
+                        'cidr': cidr,
+                        'progress': progress,
+                        'blocks_done': i + 1,
+                        'blocks_total': total_blocks,
+                        'results': total_results,
+                        'elapsed': int(elapsed)
+                    }
+                )
+            except:
+                pass
+        
+        # Финальный апдейт
+        elapsed = time.time() - start_time
         try:
             conn = get_db()
             cur = conn.cursor()
-            cur.execute("UPDATE scan_jobs SET process_pid = %s WHERE id = %s", (process.pid, job_id))
-            conn.commit()
-        except Exception as e:
-            try:
-                conn.rollback()
-            except:
-                pass
-            save_worker_error(f"run_masscan:set-pid:{job_id}", str(e), tb.format_exc())
-        finally:
-            if conn:
-                try:
-                    db_pool.putconn(conn)
-                except:
-                    try:
-                        conn.close()
-                    except:
-                        pass
-
-        # Мониторинг процесса — каждую итерацию берём отдельное соединение
-        last_check = time.time()
-        while process.poll() is None:
-            if time.time() - last_check > 2:
-                last_check = time.time()
-                try:
-                    conn_ctrl = None
-                    try:
-                        conn_ctrl = get_db()
-                        ctrl = get_job_control_status(job_id)
-                    except Exception as e:
-                        save_worker_error(f"run_masscan:ctrl-get:{job_id}", str(e), tb.format_exc())
-                        ctrl = {'action': None}
-                    finally:
-                        if conn_ctrl:
-                            try:
-                                db_pool.putconn(conn_ctrl)
-                            except:
-                                try:
-                                    conn_ctrl.close()
-                                except:
-                                    pass
-
-                    action = ctrl if isinstance(ctrl, str) else None
-
-                    if action == 'stop':
-                        print(f"🛑 Stopping job {job_id} by user request")
-                        try:
-                            process.terminate()
-                            time.sleep(1)
-                            if process.poll() is None:
-                                process.kill()
-                        except:
-                            pass
-
-                        # update status stopped and parse results
-                        conn_upd = None
-                        try:
-                            conn_upd = get_db()
-                            cur = conn_upd.cursor()
-                            cur.execute("""
-                                UPDATE scan_jobs
-                                SET status = 'stopped',
-                                    finished_at = NOW(),
-                                    process_pid = NULL,
-                                    control_action = NULL
-                                WHERE id = %s
-                            """, (job_id,))
-                            conn_upd.commit()
-                        except Exception as e:
-                            try:
-                                conn_upd.rollback()
-                            except:
-                                pass
-                            save_worker_error(f"run_masscan:stop-update:{job_id}", str(e), tb.format_exc())
-                        finally:
-                            if conn_upd:
-                                try:
-                                    db_pool.putconn(conn_upd)
-                                except:
-                                    try:
-                                        conn_upd.close()
-                                    except:
-                                        pass
-
-                        # parse results using a fresh connection and pass it to parser
-                        conn_parse = None
-                        try:
-                            conn_parse = get_db()
-                            results_count = parse_and_save_results(output_file, job_id, port, geo, conn_parse)
-                            conn_parse.commit()
-                        except Exception as e:
-                            try:
-                                if conn_parse:
-                                    conn_parse.rollback()
-                            except:
-                                pass
-                            results_count = 0
-                            save_worker_error(f"run_masscan:parse-after-stop:{job_id}", str(e), tb.format_exc())
-                        finally:
-                            if conn_parse:
-                                try:
-                                    db_pool.putconn(conn_parse)
-                                except:
-                                    try:
-                                        conn_parse.close()
-                                    except:
-                                        pass
-
-                        return {
-                            'status': 'stopped',
-                            'job_id': job_id,
-                            'result_count': results_count,
-                            'message': 'Stopped by user'
-                        }
-
-                    elif action == 'pause':
-                        if paused_at is None:
-                            print(f"⏸️ Pausing job {job_id}")
-                            try:
-                                os.kill(process.pid, signal.SIGSTOP)
-                            except:
-                                pass
-                            paused_at = time.time()
-                            conn_upd = None
-                            try:
-                                conn_upd = get_db()
-                                cur = conn_upd.cursor()
-                                cur.execute("UPDATE scan_jobs SET status = 'paused' WHERE id = %s", (job_id,))
-                                conn_upd.commit()
-                            except Exception as e:
-                                try:
-                                    if conn_upd:
-                                        conn_upd.rollback()
-                                except:
-                                    pass
-                                save_worker_error(f"run_masscan:pause-update:{job_id}", str(e), tb.format_exc())
-                            finally:
-                                if conn_upd:
-                                    try:
-                                        db_pool.putconn(conn_upd)
-                                    except:
-                                        try:
-                                            conn_upd.close()
-                                        except:
-                                            pass
-
-                    elif action == 'resume' and paused_at is not None:
-                        print(f"▶️ Resuming job {job_id}")
-                        try:
-                            os.kill(process.pid, signal.SIGCONT)
-                        except:
-                            pass
-                        paused_at = None
-                        conn_upd = None
-                        try:
-                            conn_upd = get_db()
-                            cur = conn_upd.cursor()
-                            cur.execute("UPDATE scan_jobs SET status = 'running', control_action = NULL WHERE id = %s", (job_id,))
-                            conn_upd.commit()
-                        except Exception as e:
-                            try:
-                                if conn_upd:
-                                    conn_upd.rollback()
-                            except:
-                                pass
-                            save_worker_error(f"run_masscan:resume-update:{job_id}", str(e), tb.format_exc())
-                        finally:
-                            if conn_upd:
-                                try:
-                                    db_pool.putconn(conn_upd)
-                                except:
-                                    try:
-                                        conn_upd.close()
-                                    except:
-                                        pass
-
-                    # Обновление прогресса
-                    if paused_at is None:
-                        elapsed = time.time() - start_time
-                        scanned_estimate = min(elapsed * 1000, total_ips)
-                        progress = min((scanned_estimate / total_ips) * 100, 99) if total_ips > 0 else 50
-
-                        # обновляем прогресс коротким соединением
-                        conn_prog = None
-                        try:
-                            conn_prog = get_db()
-                            update_job_progress(job_id, progress, conn_prog)
-                            conn_prog.commit()
-                        except Exception as e:
-                            try:
-                                if conn_prog:
-                                    conn_prog.rollback()
-                            except:
-                                pass
-                            save_worker_error(f"run_masscan:update-progress:{job_id}", str(e), tb.format_exc())
-                        finally:
-                            if conn_prog:
-                                try:
-                                    db_pool.putconn(conn_prog)
-                                except:
-                                    try:
-                                        conn_prog.close()
-                                    except:
-                                        pass
-
-                        # celery meta
-                        try:
-                            self.update_state(
-                                state='PROGRESS',
-                                meta={'job_id': job_id, 'cidr': cidr, 'progress': progress, 'elapsed': int(elapsed)}
-                            )
-                        except:
-                            pass
-
-                except Exception as e:
-                    # логируем, но не бросаем — чтобы цикл masscan продолжал
-                    save_worker_error(f"run_masscan:control-loop:{job_id}", str(e), tb.format_exc())
-
-            time.sleep(0.5)
-
-        # После завершения процесса — получаем returncode, парсим и обновляем статус
-        returncode = process.returncode
-        elapsed = time.time() - start_time
-        print(f"📊 Masscan finished: return_code={returncode}, time={elapsed:.1f}s")
-
-        if returncode not in (0, -15):
-            try:
-                stdout, stderr = process.communicate(timeout=5)
-            except:
-                stdout, stderr = ("", "")
-            save_worker_error(f"run_masscan:masscan-error:{job_id}", stderr)
-            raise Exception(f"Masscan failed with code {returncode}: {stderr[:300]}")
-
-        # Парсим результаты (используем отдельное соединение внутри)
-        conn_parse = None
-        try:
-            conn_parse = get_db()
-            result_count = parse_and_save_results(output_file, job_id, port, geo, conn_parse)
-            conn_parse.commit()
-        except Exception as e:
-            try:
-                if conn_parse:
-                    conn_parse.rollback()
-            except:
-                pass
-            result_count = 0
-            save_worker_error(f"run_masscan:parse-results:{job_id}", str(e), tb.format_exc())
-        finally:
-            if conn_parse:
-                try:
-                    db_pool.putconn(conn_parse)
-                except:
-                    try:
-                        conn_parse.close()
-                    except:
-                        pass
-
-        # Финальный апдейт статуса completed
-        conn_upd = None
-        try:
-            conn_upd = get_db()
-            cur = conn_upd.cursor()
             cur.execute("""
                 UPDATE scan_jobs
                 SET status = 'completed',
@@ -588,84 +541,58 @@ def run_masscan(self, job_id: str, cidr: str, port: int, geo: str):
                     process_pid = NULL,
                     control_action = NULL
                 WHERE id = %s
-            """, (result_count, job_id))
-            conn_upd.commit()
+            """, (total_results, job_id))
+            conn.commit()
         except Exception as e:
-            try:
-                if conn_upd:
-                    conn_upd.rollback()
-            except:
-                pass
-            save_worker_error(f"run_masscan:finish-update:{job_id}", str(e), tb.format_exc())
+            print(f"❌ Final update error: {e}")
         finally:
-            if conn_upd:
+            if conn:
                 try:
-                    db_pool.putconn(conn_upd)
+                    db_pool.putconn(conn)
                 except:
-                    try:
-                        conn_upd.close()
-                    except:
-                        pass
-
-        try:
-            os.remove(output_file)
-        except:
-            pass
-
-        print(f"✅ Job {job_id} completed: found {result_count} addresses")
+                    pass
+        
+        print(f"✅ Job {job_id} completed: {total_results} hosts in {int(elapsed)}s")
         return {
             'status': 'completed',
             'job_id': job_id,
             'cidr': cidr,
             'port': port,
             'geo': geo,
-            'result_count': result_count,
-            'elapsed_seconds': int(elapsed)
+            'result_count': total_results,
+            'elapsed_seconds': int(elapsed),
+            'blocks_scanned': total_blocks
         }
-
+        
     except Exception as e:
-        save_worker_error(f"run_masscan:exception:{job_id}", str(e), tb.format_exc())
-        # помечаем failed
-        conn_fail = None
+        print(f"❌ Fatal error in run_masscan: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        # Помечаем failed
         try:
-            conn_fail = get_db()
-            cur = conn_fail.cursor()
+            conn = get_db()
+            cur = conn.cursor()
             cur.execute("""
                 UPDATE scan_jobs
                 SET status = 'failed',
                     finished_at = NOW(),
+                    result_count = %s,
                     process_pid = NULL,
                     control_action = NULL
                 WHERE id = %s
-            """, (job_id,))
-            conn_fail.commit()
-        except Exception as e2:
-            save_worker_error(f"run_masscan:update-failed:{job_id}", str(e2), tb.format_exc())
-        finally:
-            if conn_fail:
-                try:
-                    db_pool.putconn(conn_fail)
-                except:
-                    try:
-                        conn_fail.close()
-                    except:
-                        pass
-        raise
-
-    finally:
-        # окончательное завершение процесса, если жив
-        try:
-            if process and process.poll() is None:
-                try:
-                    process.terminate()
-                    time.sleep(0.5)
-                    if process.poll() is None:
-                        process.kill()
-                except:
-                    pass
+            """, (total_results, job_id))
+            conn.commit()
         except:
             pass
-
+        finally:
+            if conn:
+                try:
+                    db_pool.putconn(conn)
+                except:
+                    pass
+        
+        raise
 
 # ============================================
 # ВСТАВКА АДРЕСОВ
@@ -690,7 +617,6 @@ def insert_addresses_batch(conn, ips: List[str], port: int, geo: str, job_id: st
     except Exception as e:
         save_worker_error("insert_addresses_batch", str(e), tb.format_exc())
         return 0
-
 
 # ============================================
 # Управление задачами (pause/stop/resume)
@@ -746,7 +672,6 @@ def control_job(job_id: str, action: str):
                 except:
                     pass
 
-
 # ============================================
 # Очистка старых данных
 # ============================================
@@ -792,32 +717,31 @@ def cleanup_old_data(days: int = 7):
                 except:
                     pass
 
-
 # ============================================
-#   start masscan job (beat)
+# Beat schedule
 # ============================================
 app.conf.beat_schedule = {
     "auto-start-pending-us": {
         "task": "tasks.process_pending_scans",
-        "schedule": 15.0,  # каждые 15 секунд
+        "schedule": 15.0,
         "args": ("US", 10),
     },
 }
 
-
 # ============================================
 # АВТОЗАПУСК PENDING
 # ============================================
+# НАЙДИ В tasks.py функцию process_pending_scans и ЗАМЕНИ на это:
+
 @app.task(name='tasks.process_pending_scans')
 def process_pending_scans(geo: str = 'US', limit: int = 10):
-    """
-    Берём несколько pending задач и запускаем run_masscan.delay для каждой.
-    Обязательно корректно возвращаем соединение.
-    """
+    """Берём pending задачи и запускаем"""
     conn = None
     try:
         conn = get_db()
         cur = conn.cursor()
+        
+        # ИСПРАВЛЕНО: добавлена проверка результата
         cur.execute("""
             SELECT j.id, s.cidr, p.port, s.geo
             FROM scan_jobs j
@@ -828,7 +752,14 @@ def process_pending_scans(geo: str = 'US', limit: int = 10):
             LIMIT %s
             FOR UPDATE SKIP LOCKED
         """, (geo, limit))
+        
+        # ПРОВЕРЯЕМ что есть результаты
+        if cur.rowcount == 0:
+            conn.commit()
+            return None
+            
         jobs = cur.fetchall()
+        
         if not jobs:
             conn.commit()
             return None
@@ -839,21 +770,22 @@ def process_pending_scans(geo: str = 'US', limit: int = 10):
             cidr = job[1]
             p = job[2]
             g = job[3]
-            # помечаем queued
             cur.execute("UPDATE scan_jobs SET status='queued' WHERE id=%s", (jid,))
             launched.append(jid)
             run_masscan.delay(jid, cidr, p, g)
 
         conn.commit()
         return {'status': 'launched', 'count': len(launched)}
+        
     except Exception as e:
+        print(f"❌ process_pending_scans error: {e}")
         try:
             if conn:
                 conn.rollback()
         except:
             pass
-        save_worker_error("process_pending_scans", str(e), tb.format_exc())
-        raise
+        # НЕ бросаем exception, просто возвращаем None
+        return None
     finally:
         if conn:
             try:

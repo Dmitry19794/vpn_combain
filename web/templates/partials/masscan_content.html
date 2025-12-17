@@ -1,59 +1,359 @@
 <div class="card">
-  <h3>📤 Upload Subnets for Scanning</h3>
-  <form hx-post="/upload-subnets" 
-        hx-encoding="multipart/form-data"
-        hx-target="#upload-feedback"
-        hx-swap="innerHTML">
-    <div style="margin-bottom:8px;">
-      <label>📁 File (CIDR/IP, one per line):</label><br>
-      <input type="file" name="file" required style="width:100%;">
+    <h3>🔍 Network Scanning (Nmap через прокси)</h3>
+    
+    <!-- Добавление задачи сканирования -->
+    <details open style="margin-bottom: 20px;">
+        <summary style="cursor: pointer; padding: 10px; background: rgba(0,0,0,0.03); border-radius: 5px;">
+            ➕ Добавить задачу сканирования
+        </summary>
+        <div style="padding: 15px; border: 1px solid rgba(0,0,0,0.1); border-top: none; border-radius: 0 0 5px 5px;">
+            <form hx-post="/add-scan-job" 
+                  hx-target="#scan-add-result"
+                  hx-swap="innerHTML">
+                <div style="display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 10px;">
+                    <div>
+                        <label>CIDR / IP</label>
+                        <input type="text" name="cidr" placeholder="192.168.0.0/24" required 
+                               style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px;">
+                    </div>
+                    <div>
+                        <label>Port</label>
+                        <input type="text" name="port" placeholder="443" required 
+                               style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px;">
+                    </div>
+                    <div>
+                        <label>GEO</label>
+                        <select name="geo" required style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px;">
+                            <option value="US">US</option>
+                            <option value="EU">EU</option>
+                            <option value="ASIA">ASIA</option>
+                        </select>
+                    </div>
+                    <div style="display: flex; align-items: end;">
+                        <button type="submit" class="btn btn-primary" style="width: 100%;">
+                            🚀 Добавить
+                        </button>
+                    </div>
+                </div>
+            </form>
+            <div id="scan-add-result" style="margin-top: 10px;"></div>
+        </div>
+    </details>
+    
+    <!-- Загрузка из файла -->
+    <details style="margin-bottom: 20px;">
+        <summary style="cursor: pointer; padding: 10px; background: rgba(0,0,0,0.03); border-radius: 5px;">
+            📂 Загрузить подсети из файла
+        </summary>
+        <div style="padding: 15px; border: 1px solid rgba(0,0,0,0.1); border-top: none; border-radius: 0 0 5px 5px;">
+            <form hx-post="/upload-subnets" 
+                  hx-encoding="multipart/form-data"
+                  hx-target="#upload-subnets-result"
+                  hx-swap="innerHTML">
+                <div style="display: flex; gap: 10px; align-items: end;">
+                    <div style="flex: 1;">
+                        <label>Файл (CIDR per line)</label>
+                        <input type="file" name="file" required style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px;">
+                    </div>
+                    <div>
+                        <label>Port</label>
+                        <input type="text" name="port" placeholder="443" required style="padding: 8px; border: 1px solid #ccc; border-radius: 4px;">
+                    </div>
+                    <div>
+                        <label>GEO</label>
+                        <select name="geo" required style="padding: 8px; border: 1px solid #ccc; border-radius: 4px;">
+                            <option value="US">US</option>
+                            <option value="EU">EU</option>
+                            <option value="ASIA">ASIA</option>
+                        </select>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Загрузить</button>
+                </div>
+            </form>
+            <div id="upload-subnets-result" style="margin-top: 10px;"></div>
+        </div>
+    </details>
+    
+    <!-- Статистика сканирования -->
+    <div style="display: flex; gap: 15px; margin: 20px 0; flex-wrap: wrap;">
+        <div style="padding: 10px 20px; background: linear-gradient(135deg, #fa709a 0%, #fee140 100%); color: white; border-radius: 8px;">
+            <strong id="scan-jobs-running">-</strong> Running
+        </div>
+        <div style="padding: 10px 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 8px;">
+            <strong id="scan-jobs-pending">-</strong> Pending
+        </div>
+        <div style="padding: 10px 20px; background: rgba(0,0,0,0.1); border-radius: 8px;">
+            <strong id="scan-jobs-completed">-</strong> Completed
+        </div>
     </div>
-    <div style="margin-bottom:8px;">
-      <label>🌍 GEO:</label><br>
-      <select name="geo" required style="width:100%;">
-        <option value="US">US</option>
-        <option value="EU">EU</option>
-        <option value="ASIA">ASIA</option>
-      </select>
+    
+    <!-- Управление -->
+    <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+        <button hx-post="/start-masscan?geo=US" 
+                hx-swap="none"
+                class="btn btn-success">
+            ▶ Start Scanning
+        </button>
+        <button hx-post="/stop-all-scans" 
+                hx-swap="none"
+                class="btn btn-danger">
+            ⏹ Stop All
+        </button>
+        <button hx-post="/clear-masscan" 
+                hx-confirm="Очистить все задачи сканирования?"
+                hx-swap="none"
+                class="btn btn-warning">
+            🗑️ Clear All
+        </button>
     </div>
-    <div style="margin-bottom:8px;">
-      <label>🔢 Port:</label><br>
-      <input type="number" name="port" value="443" min="1" max="65535" required style="width:100%;">
+    
+    <!-- Таблица задач сканирования -->
+    <div style="overflow-x: auto;">
+        <table style="width: 100%; border-collapse: collapse;">
+            <thead>
+                <tr style="background: rgba(0,0,0,0.05);">
+                    <th style="padding: 12px; text-align: left;">Job ID</th>
+                    <th style="padding: 12px; text-align: left;">CIDR</th>
+                    <th style="padding: 12px; text-align: left;">Port</th>
+                    <th style="padding: 12px; text-align: left;">GEO</th>
+                    <th style="padding: 12px; text-align: left;">Status</th>
+                    <th style="padding: 12px; text-align: left;">Progress</th>
+                    <th style="padding: 12px; text-align: left;">Results</th>
+                    <th style="padding: 12px; text-align: left;">Actions</th>
+                </tr>
+            </thead>
+            <tbody id="scan-jobs-table">
+                <tr>
+                    <td colspan="8" style="text-align: center; padding: 40px; color: #999;">
+                        Загрузка...
+                    </td>
+                </tr>
+            </tbody>
+        </table>
     </div>
-    <button type="submit" class="btn">📤 Upload & Queue</button>
-  </form>
-
-  <!-- 👇 ДОБАВЛЕНА КНОПКА ОЧИСТИТЬ -->
-  <br>
-  <button hx-post="/clear-masscan"
-          hx-target="#main-content"
-          hx-swap="outerHTML"
-          hx-confirm="⚠️ Очистить ВСЕ задачи сканирования и найденные адреса? Действие необратимо."
-          class="btn"
-          style="background:#d32f2f; margin-top:8px;">
-    🗑️ Очистить
-  </button>
-
-  <div id="upload-feedback" style="margin-top:10px; min-height: 24px;"></div>
-</div>
-
-<!-- 🔻 БЛОК CONTROL УДАЛЁН -->
-
-<div class="card">
-  <h3>📊 Scan Jobs Status</h3>
-  <div id="scan-jobs" hx-get="/scan-jobs-status" hx-trigger="load, every 2s" hx-swap="innerHTML"></div>
 </div>
 
 <style>
-.status-badge {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 3px;
-  font-size: 0.75em;
-  font-weight: bold;
+.scan-status {
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 0.85em;
+    font-weight: bold;
 }
-.pending { background: #333; color: #ccc; }
-.running { background: #3c1a1a; color: #ffcdd2; }
-.completed { background: #1b3a1f; color: #a5d6a7; }
-.failed { background: #5d2121; color: #ffcdd2; }
+
+.status-pending {
+    background: #ffeaa7;
+    color: #d63031;
+}
+
+.status-running {
+    background: #55efc4;
+    color: #00b894;
+}
+
+.status-paused {
+    background: #fab1a0;
+    color: #e17055;
+}
+
+.status-completed {
+    background: #dfe6e9;
+    color: #2d3436;
+}
+
+.status-stopped {
+    background: #fdcb6e;
+    color: #e17055;
+}
+
+.status-failed {
+    background: #ff7675;
+    color: #d63031;
+}
+
+.progress-bar {
+    width: 100%;
+    height: 8px;
+    background: rgba(0,0,0,0.1);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+    transition: width 0.3s ease;
+}
+
+.btn-action {
+    padding: 4px 10px;
+    font-size: 0.85em;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+    margin: 0 2px;
+}
+
+.btn-pause {
+    background: #ff9800;
+    color: white;
+}
+
+.btn-resume {
+    background: #2196f3;
+    color: white;
+}
+
+.btn-stop {
+    background: #f44336;
+    color: white;
+}
+
+.btn-action:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+}
 </style>
+
+<script>
+// WebSocket для обновления scan jobs
+let scanJobsWs = null;
+
+function connectScanJobsWebSocket() {
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
+    
+    scanJobsWs = new WebSocket(wsUrl);
+    
+    scanJobsWs.onopen = function() {
+        console.log('✅ Scan jobs WebSocket connected');
+    };
+    
+    scanJobsWs.onmessage = function(event) {
+        const message = JSON.parse(event.data);
+        
+        if (message.type === 'jobs_update') {
+            updateScanJobsTable(message.jobs);
+        }
+    };
+    
+    scanJobsWs.onerror = function(error) {
+        console.error('❌ Scan jobs WebSocket error:', error);
+    };
+    
+    scanJobsWs.onclose = function() {
+        console.log('🔴 Scan jobs WebSocket disconnected');
+        setTimeout(connectScanJobsWebSocket, 3000);
+    };
+}
+
+function updateScanJobsTable(jobs) {
+    const tbody = document.getElementById('scan-jobs-table');
+    
+    if (!jobs || jobs.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="8" style="text-align: center; padding: 40px; color: #999;">
+                    Нет активных задач сканирования
+                </td>
+            </tr>
+        `;
+        
+        // Обнуляем счетчики
+        document.getElementById('scan-jobs-running').textContent = '0';
+        document.getElementById('scan-jobs-pending').textContent = '0';
+        document.getElementById('scan-jobs-completed').textContent = '0';
+        return;
+    }
+    
+    // Считаем статистику
+    const running = jobs.filter(j => j.status === 'running').length;
+    const pending = jobs.filter(j => j.status === 'pending').length;
+    const completed = jobs.filter(j => j.status === 'completed').length;
+    
+    document.getElementById('scan-jobs-running').textContent = running;
+    document.getElementById('scan-jobs-pending').textContent = pending;
+    document.getElementById('scan-jobs-completed').textContent = completed;
+    
+    // Формируем таблицу
+    const html = jobs.map(job => {
+        const jobId = job.id.substring(0, 8);
+        const progress = job.progress_percent || 0;
+        const results = job.result_count || 0;
+        
+        // Статус
+        let statusClass = 'status-' + job.status;
+        let statusText = job.status.toUpperCase();
+        
+        // Кнопки управления
+        let actions = '';
+        if (job.status === 'running') {
+            actions = `
+                <button class="btn-action btn-pause" 
+                        hx-post="/api/control-job" 
+                        hx-vals='{"job_id": "${job.id}", "action": "pause"}'
+                        hx-swap="none">
+                    ⏸
+                </button>
+                <button class="btn-action btn-stop" 
+                        hx-post="/api/control-job" 
+                        hx-vals='{"job_id": "${job.id}", "action": "stop"}'
+                        hx-swap="none">
+                    ⏹
+                </button>
+            `;
+        } else if (job.status === 'paused') {
+            actions = `
+                <button class="btn-action btn-resume" 
+                        hx-post="/api/control-job" 
+                        hx-vals='{"job_id": "${job.id}", "action": "resume"}'
+                        hx-swap="none">
+                    ▶
+                </button>
+                <button class="btn-action btn-stop" 
+                        hx-post="/api/control-job" 
+                        hx-vals='{"job_id": "${job.id}", "action": "stop"}'
+                        hx-swap="none">
+                    ⏹
+                </button>
+            `;
+        }
+        
+        return `
+            <tr>
+                <td style="font-family: monospace;">${jobId}...</td>
+                <td>-</td>
+                <td>-</td>
+                <td><strong>-</strong></td>
+                <td><span class="scan-status ${statusClass}">${statusText}</span></td>
+                <td>
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width: ${progress}%"></div>
+                    </div>
+                    <div style="font-size: 0.8em; margin-top: 2px;">${progress.toFixed(1)}%</div>
+                </td>
+                <td><strong>${results}</strong></td>
+                <td>${actions}</td>
+            </tr>
+        `;
+    }).join('');
+    
+    tbody.innerHTML = html;
+}
+
+// Подключаемся при загрузке
+connectScanJobsWebSocket();
+
+// Также подгружаем данные через HTTP каждые 5 секунд (fallback)
+setInterval(function() {
+    fetch('/api/jobs-status')
+        .then(r => r.json())
+        .then(data => {
+            if (data.jobs) {
+                updateScanJobsTable(data.jobs);
+            }
+        })
+        .catch(err => console.error('Error fetching jobs:', err));
+}, 5000);
+</script>

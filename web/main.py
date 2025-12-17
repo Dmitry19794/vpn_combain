@@ -69,8 +69,8 @@ app = FastAPI()
 from pathlib import Path
 BASE_DIR = Path(__file__).parent
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
-PG_PORT = os.getenv("PGPORT", "5432")
-DB_DSN = os.getenv("DATABASE_URL", f"postgresql://brute:your_password_here@localhost:{PG_PORT}/brute_system")
+PG_PORT = os.getenv("PGPORT", "5434")
+DB_DSN = f"postgresql://brute:securepass123@localhost:{PG_PORT}/brute_system"
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -240,23 +240,20 @@ async def metrics_partial(request: Request):
     cur = get_cursor(db)
 
     try:
-        # Количество групп
         cur.execute("SELECT COUNT(*) AS cnt FROM cred_groups;")
         cred_groups = cur.fetchone()["cnt"]
 
-        # Логины
         cur.execute("SELECT COUNT(*) AS cnt FROM logins;")
         logins = cur.fetchone()["cnt"]
 
-        # Пароли
         cur.execute("SELECT COUNT(*) AS cnt FROM passwords;")
         passwords = cur.fetchone()["cnt"]
 
-        # ИСПРАВЛЕНО: считаем только ЖИВЫЕ прокси
+        # ВАЖНО: считаем ВСЕХ прокси
+        #cur.execute("SELECT COUNT(*) AS cnt FROM proxies;")
         cur.execute("SELECT COUNT(*) AS cnt FROM proxies WHERE is_alive = TRUE;")
         proxies = cur.fetchone()["cnt"]
 
-        # VPN
         cur.execute("SELECT COUNT(*) AS cnt FROM vpns;")
         vpns = cur.fetchone()["cnt"]
 
@@ -317,6 +314,178 @@ async def websocket_endpoint(websocket: WebSocket):
             })
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+# ============================================
+# WebSocket для реал-тайм метрик
+# ============================================
+@app.websocket("/ws/metrics")
+async def websocket_metrics(websocket: WebSocket):
+    """WebSocket для обновления метрик в реальном времени"""
+    await websocket.accept()
+    
+    try:
+        while True:
+            db = None
+            try:
+                db = get_db()
+                cur = get_cursor(db)
+                
+                # Собираем все метрики
+                metrics = {}
+                
+                # 1. Credential groups
+                cur.execute("SELECT COUNT(*) AS cnt FROM cred_groups;")
+                metrics['cred_groups'] = cur.fetchone()["cnt"]
+                
+                # 2. Logins
+                cur.execute("SELECT COUNT(*) AS cnt FROM logins;")
+                metrics['logins'] = cur.fetchone()["cnt"]
+                
+                # 3. Passwords
+                cur.execute("SELECT COUNT(*) AS cnt FROM passwords;")
+                metrics['passwords'] = cur.fetchone()["cnt"]
+                
+                # 4. Прокси (ТОЛЬКО ЖИВЫЕ)
+                cur.execute("SELECT COUNT(*) AS cnt FROM proxies WHERE is_alive = TRUE;")
+                metrics['proxies_alive'] = cur.fetchone()["cnt"]
+                
+                # 5. Прокси (ВСЕ)
+                cur.execute("SELECT COUNT(*) AS cnt FROM proxies;")
+                metrics['proxies_total'] = cur.fetchone()["cnt"]
+                
+                # 6. Прокси по GEO
+                cur.execute("""
+                    SELECT geo, COUNT(*) as cnt 
+                    FROM proxies 
+                    WHERE is_alive = TRUE 
+                    GROUP BY geo 
+                    ORDER BY cnt DESC 
+                    LIMIT 5;
+                """)
+                proxies_by_geo = [{"geo": r["geo"], "count": r["cnt"]} for r in cur.fetchall()]
+                metrics['proxies_by_geo'] = proxies_by_geo
+                
+                # 7. VPNs
+                cur.execute("SELECT COUNT(*) AS cnt FROM vpns;")
+                metrics['vpns'] = cur.fetchone()["cnt"]
+                
+                # 8. VPNs по статусу
+                cur.execute("""
+                    SELECT status, COUNT(*) as cnt 
+                    FROM vpns 
+                    GROUP BY status;
+                """)
+                vpns_by_status = {r["status"]: r["cnt"] for r in cur.fetchall()}
+                metrics['vpns_by_status'] = vpns_by_status
+                
+                # 9. Scan jobs статус
+                cur.execute("""
+                    SELECT COUNT(*) as cnt
+                    FROM scan_jobs
+                    WHERE status IN ('running', 'paused');
+                """)
+                metrics['scan_jobs_active'] = cur.fetchone()["cnt"]
+                
+                # 10. Celery статус
+                celery_status = get_celery_worker_status()
+                metrics['celery_online'] = celery_status.get("online", False)
+                
+                # 11. Proxy checker статус
+                proxy_checker_status = get_proxy_checker_status()
+                metrics['proxy_checker_running'] = proxy_checker_status.get("running", False)
+                
+                # Отправляем данные
+                await websocket.send_json({
+                    "type": "metrics_update",
+                    "data": metrics,
+                    "timestamp": datetime.now().isoformat()
+                })
+                
+            except Exception as e:
+                print(f"❌ WebSocket metrics error: {e}")
+                await websocket.send_json({
+                    "type": "error",
+                    "message": str(e)
+                })
+            finally:
+                if db:
+                    try:
+                        db_pool.putconn(db)
+                    except:
+                        pass
+            
+            # Обновляем каждые 2 секунды
+            await asyncio.sleep(2)
+            
+    except WebSocketDisconnect:
+        print("📡 WebSocket metrics disconnected")
+    except Exception as e:
+        print(f"❌ WebSocket fatal error: {e}")
+
+@app.websocket("/ws/proxy-table")
+async def websocket_proxy_table(websocket: WebSocket):
+    import logging
+    logging.getLogger("uvicorn.error").setLevel(logging.CRITICAL) 
+    
+    try:
+        await websocket.accept()
+    except:
+        return
+    
+    try:
+        while True:
+            # СНАЧАЛА проверяем что WebSocket ОТКРЫТ
+            if websocket.client_state.value != 1:  # 1 = CONNECTED
+                break
+            
+            db = None
+            try:
+                db = get_db()
+                cur = db.cursor()
+                
+                cur.execute("""
+                    SELECT host, port, geo, anonymity, speed_ms, is_alive, last_check
+                    FROM proxies
+                    ORDER BY is_alive DESC, last_check DESC NULLS LAST
+                    LIMIT 50;
+                """)
+                
+                rows = cur.fetchall()
+                
+                proxies = []
+                for r in rows:
+                    proxies.append({
+                        "host": r[0],
+                        "port": r[1],
+                        "geo": r[2] or "unknown",
+                        "anonymity": r[3] or "anonymous",
+                        "speed_ms": r[4] or 0,
+                        "is_alive": r[5],
+                        "last_check": r[6].strftime('%H:%M:%S') if r[6] else '-'
+                    })
+                
+                # Отправляем ТОЛЬКО если WebSocket открыт
+                if websocket.client_state.value == 1:
+                    await websocket.send_json({
+                        "type": "proxy_table_update",
+                        "data": proxies
+                    })
+                else:
+                    break
+                
+            except:
+                break
+            finally:
+                if db:
+                    try:
+                        db_pool.putconn(db)
+                    except:
+                        pass
+            
+            await asyncio.sleep(3)
+            
+    except:
+        pass
 
 # ========== API ENDPOINTS ==========
 @app.get("/api/jobs-status")
@@ -420,6 +589,152 @@ def read_proxy_output():
         save_proxy_parsed(parsed)
 
 # ========== НОВЫЕ ЭНДПОИНТЫ ДЛЯ PROXY CHECKER ==========
+
+@app.get("/scan-jobs-table", response_class=HTMLResponse)
+async def scan_jobs_table():
+    """Возвращает HTML таблицу активных задач с кнопками управления"""
+    db = get_db()
+    cur = get_cursor(db)
+    
+    try:
+        cur.execute("""
+            SELECT 
+                j.id, 
+                s.cidr, 
+                p.port, 
+                s.geo, 
+                j.status,
+                j.progress_percent,
+                j.result_count,
+                j.started_at,
+                j.control_action
+            FROM scan_jobs j
+            JOIN scan_subnets s ON j.subnet_id = s.id
+            JOIN scan_ports p ON j.port_id = p.id
+            WHERE j.status IN ('pending', 'running', 'paused', 'queued')
+            ORDER BY 
+                CASE 
+                    WHEN j.status = 'running' THEN 0
+                    WHEN j.status = 'paused' THEN 1
+                    WHEN j.status = 'queued' THEN 2
+                    ELSE 3
+                END,
+                j.created_at DESC
+            LIMIT 50
+        """)
+        jobs = cur.fetchall()
+        
+    except Exception as e:
+        print(f"❌ scan_jobs_table error: {e}")
+        return "<tr><td colspan='8' style='color:#ff8a80;'>Database error</td></tr>"
+    finally:
+        db_pool.putconn(db)
+    
+    if not jobs:
+        return """
+        <tr>
+            <td colspan="8" style="text-align:center; color:#888; padding:20px;">
+                No active jobs. Create new scan task above.
+            </td>
+        </tr>
+        """
+    
+    html = ""
+    for job in jobs:
+        job_id = str(job['id'])
+        job_id_short = job_id[:8]
+        cidr = job['cidr']
+        port = job['port']
+        geo = job['geo']
+        status = job['status']
+        progress = job.get('progress_percent') or 0
+        results = job.get('result_count') or 0
+        
+        # Цвета статусов
+        status_colors = {
+            'pending': '#888',
+            'queued': '#1976d2',
+            'running': '#2e7d32',
+            'paused': '#f57c00',
+        }
+        status_color = status_colors.get(status, '#888')
+        
+        # Кнопки в зависимости от статуса
+        if status == 'pending' or status == 'queued':
+            actions = f"""
+            <button class="btn" 
+                    style="background:#2e7d32; padding:4px 8px; font-size:0.85em;"
+                    hx-post="/api/control-job" 
+                    hx-vals='{{"job_id": "{job_id}", "action": "resume"}}'
+                    hx-swap="none"
+                    hx-on="htmx:afterRequest: htmx.trigger('#scan-jobs-tbody', 'load')">
+                ▶ Start
+            </button>
+            """
+        elif status == 'running':
+            actions = f"""
+            <button class="btn" 
+                    style="background:#f57c00; padding:4px 8px; font-size:0.85em;"
+                    hx-post="/api/control-job" 
+                    hx-vals='{{"job_id": "{job_id}", "action": "pause"}}'
+                    hx-swap="none"
+                    hx-on="htmx:afterRequest: htmx.trigger('#scan-jobs-tbody', 'load')">
+                ⏸ Pause
+            </button>
+            <button class="btn" 
+                    style="background:#d32f2f; padding:4px 8px; font-size:0.85em; margin-left:4px;"
+                    hx-post="/api/control-job" 
+                    hx-vals='{{"job_id": "{job_id}", "action": "stop"}}'
+                    hx-confirm="Stop this job?"
+                    hx-swap="none"
+                    hx-on="htmx:afterRequest: htmx.trigger('#scan-jobs-tbody', 'load')">
+                ⛔ Stop
+            </button>
+            """
+        elif status == 'paused':
+            actions = f"""
+            <button class="btn" 
+                    style="background:#2e7d32; padding:4px 8px; font-size:0.85em;"
+                    hx-post="/api/control-job" 
+                    hx-vals='{{"job_id": "{job_id}", "action": "resume"}}'
+                    hx-swap="none"
+                    hx-on="htmx:afterRequest: htmx.trigger('#scan-jobs-tbody', 'load')">
+                ▶ Resume
+            </button>
+            <button class="btn" 
+                    style="background:#d32f2f; padding:4px 8px; font-size:0.85em; margin-left:4px;"
+                    hx-post="/api/control-job" 
+                    hx-vals='{{"job_id": "{job_id}", "action": "stop"}}'
+                    hx-confirm="Stop this job?"
+                    hx-swap="none"
+                    hx-on="htmx:afterRequest: htmx.trigger('#scan-jobs-tbody', 'load')">
+                ⛔ Stop
+            </button>
+            """
+        else:
+            actions = "—"
+        
+        html += f"""
+        <tr>
+            <td style="font-family:monospace; font-size:0.85em;">{job_id_short}...</td>
+            <td><strong>{cidr}</strong></td>
+            <td>{port}</td>
+            <td><span style="background:#333; padding:2px 6px; border-radius:3px; font-size:0.85em;">{geo}</span></td>
+            <td><span style="color:{status_color}; font-weight:bold; font-size:0.9em;">● {status.upper()}</span></td>
+            <td>
+                <div style="background:#333; border-radius:3px; height:20px; position:relative; overflow:hidden; min-width:80px;">
+                    <div style="background:#2e7d32; height:100%; width:{progress}%; transition:width 0.3s;"></div>
+                    <span style="position:absolute; left:50%; top:50%; transform:translate(-50%, -50%); font-size:0.75em; font-weight:bold; color:#fff;">
+                        {progress}%
+                    </span>
+                </div>
+            </td>
+            <td style="color:#a5d6a7; font-weight:bold;">{results}</td>
+            <td style="white-space:nowrap;">{actions}</td>
+        </tr>
+        """
+    
+    return html
 
 @app.get("/proxy-checker-status", response_class=HTMLResponse)
 async def proxy_checker_status_html():
@@ -594,7 +909,7 @@ async def api_proxy_list_all(limit: int = 10000):
             proxies.append({
                 "id": str(r["id"]),
                 "host": r["host"],
-                "port": r["port"],
+                "port": str(r["port"]),
                 "geo": r["geo"] or "unknown",
                 "anonymity": r["anonymity"] or "anonymous",
                 "speed_ms": r["speed_ms"] or 0,
@@ -665,47 +980,132 @@ async def api_proxy_list(limit: int = 200, geo: str = None):
             except:
                 pass
 
-@app.post("/api/proxy-batch-update")
-async def api_proxy_batch_update(proxies: List[dict]):
+@app.post("/api/proxy-delete")
+async def api_proxy_delete(proxies: List[dict]):
     """
-    Обновляет СУЩЕСТВУЮЩИЕ прокси: is_alive, speed_ms, last_check, geo, anonymity
-    Новые прокси НЕ добавляет.
-    Формат: [{"host", "port", "geo", "anonymity", "speed_ms", "is_alive"}]
+    Удаляет прокси из БД по host+port.
+    Формат: [{"host": "...", "port": "..."}]
     """
     conn = None
     try:
         conn = get_db()
         cur = get_cursor(conn)
-        updated = 0
+        deleted = 0
         for p in proxies:
             cur.execute("""
-                UPDATE proxies
-                SET
-                    geo = %s,
-                    anonymity = %s,
-                    speed_ms = %s,
-                    is_alive = %s,
-                    last_check = NOW()
-                WHERE host = %s AND port = %s;
-            """, (
-                p.get("geo", "??"),
-                p.get("anonymity", "anonymous"),
-                int(p.get("speed_ms", 0)),
-                bool(p.get("is_alive", False)),
-                p["host"],
-                int(p["port"])
-            ))
-            updated += cur.rowcount
+                DELETE FROM proxies WHERE host = %s AND port = %s;
+            """, (p["host"], str(p["port"])))
+            deleted += cur.rowcount
         conn.commit()
-        return {"updated": updated, "total": len(proxies)}
+        return {"deleted": deleted}
     except Exception as e:
         if conn:
             conn.rollback()
-        print(f"❌ /api/proxy-batch-update error: {e}")
+        print(f"❌ /api/proxy-delete error: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
     finally:
         if conn:
             db_pool.putconn(conn)
+
+@app.post("/api/proxy-batch-update")
+async def api_proxy_batch_update(request: Request):
+    """Обновляет прокси в БД"""
+    
+    # СОЗДАЁМ НОВОЕ СОЕДИНЕНИЕ НАПРЯМУЮ (БЕЗ ПУЛА!)
+    import psycopg2
+    conn = None
+    
+    try:
+        # Читаем JSON
+        body = await request.json()
+        
+        if isinstance(body, list):
+            proxies = body
+        else:
+            proxies = [body]
+        
+        print(f"\n{'='*60}")
+        print(f"📥 Получено {len(proxies)} прокси")
+        
+        # ПРЯМОЕ ПОДКЛЮЧЕНИЕ К БД
+        conn = psycopg2.connect(DB_DSN)
+        conn.autocommit = False  # ВАЖНО!
+        
+        cur = conn.cursor()
+        
+        success = 0
+        errors = 0
+        
+        for p in proxies:
+            try:
+                host = p.get("host")
+                port = p.get("port")
+                
+                if not host or not port:
+                    errors += 1
+                    continue
+                
+                geo = p.get("geo", "unknown")
+                anonymity = p.get("anonymity", "anonymous") 
+                speed_ms = int(p.get("speed_ms", 0))
+                is_alive = bool(p.get("is_alive", False))
+                
+                cur.execute("""
+                    INSERT INTO proxies (
+                        id, host, port, geo, anonymity, speed_ms, is_alive,
+                        last_check, created_at
+                    )
+                    VALUES (
+                        uuid_generate_v4(), %s, %s, %s, %s, %s, %s, NOW(), NOW()
+                    )
+                    ON CONFLICT (host, port)
+                    DO UPDATE SET
+                        geo = EXCLUDED.geo,
+                        anonymity = EXCLUDED.anonymity,
+                        speed_ms = EXCLUDED.speed_ms,
+                        is_alive = EXCLUDED.is_alive,
+                        last_check = NOW()
+                """, (host, int(port), geo, anonymity, speed_ms, is_alive))
+                
+                success += 1
+                
+            except Exception as e:
+                print(f"❌ Ошибка: {e}")
+                errors += 1
+                continue
+        
+        # COMMIT ОБЯЗАТЕЛЬНО!
+        conn.commit()
+        
+        print(f"✅ Записано {success} прокси (ошибок: {errors})")
+        print(f"{'='*60}\n")
+        
+        # Закрываем курсор
+        cur.close()
+        
+        return JSONResponse({
+            "status": "success",
+            "updated": success,
+            "errors": errors
+        })
+        
+    except Exception as e:
+        print(f"❌ FATAL: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        if conn:
+            conn.rollback()
+        
+        return JSONResponse(status_code=500, content={"error": str(e)})
+        
+    finally:
+        # Закрываем соединение
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
 
 @app.get("/proxy-table", response_class=HTMLResponse)
 def proxy_table(limit: int = 50):

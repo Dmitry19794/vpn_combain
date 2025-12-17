@@ -164,9 +164,18 @@ def _log_reader(proc):
                     continue
 
                 # Обновляем краткий лог (только если это важная строка)
-                if any(x in line for x in ["✓", "✗", "===", "Найдено", "Проверка"]):
+                # Только если строка начинается с ✅/❌/✗/✓ + IP:PORT
+                if re.match(r'^[✅❌✗✓]\s+\d+\.\d+\.\d+\.\d+:\d+\s*\|', line):
                     STATUS["last_log"] = line[:300]
                     print(f"[LOG] {line}")
+                elif "terminated" in line or "final flush" in line.lower():
+                    STATUS["last_log"] = "completed successfully"
+                    print(f"[LOG] {line}")
+                elif "process died" not in STATUS["last_log"]:
+                    # Остаёмся на последнем успешном логе, не перезаписываем на "process died" сразу
+                    print(f"⚠️ {line}")	
+                    
+                    
 
                 # Парсим (добавляем в кэш)
                 try:
@@ -214,7 +223,7 @@ def start_proxy_checker():
 
     # Запускаем бинарник
     PROCESS = subprocess.Popen(
-    [PROXY_CHECKER_BIN],
+    [PROXY_CHECKER_BIN, "--recheck-db"],
     stdout=subprocess.PIPE,
     stderr=subprocess.STDOUT,
     bufsize=1,

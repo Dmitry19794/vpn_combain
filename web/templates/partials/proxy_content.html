@@ -1,112 +1,319 @@
 <div class="card">
-    <h3>🧪 Proxy Checker</h3>
-
-    <!-- Status line -->
-    <div style="margin-bottom: 12px; padding:8px; background:#2a2a2a; border-radius:4px;">
-        <strong>Status:</strong>
-        <span id="proxy-checker-status"
-              hx-get="/proxy-checker-status"
-              hx-trigger="load, every 5s"
-              hx-swap="innerHTML">
-            Checking...
-        </span>
-    </div>
-
-    <!-- 📋 LIVE LOGS (НОВОЕ) -->
-    <div style="background:#1a1a1a; padding:12px; border-radius:4px; margin-bottom:16px; max-height:200px; overflow-y:auto; border:1px solid #333;">
-        <strong>📋 Live Logs:</strong>
-        <div id="proxy-logs"
-             hx-get="/proxy-checker-logs"
-             hx-trigger="load, every 3s"
-             hx-swap="innerHTML"
-             style="font-family:monospace; font-size:0.85em; white-space:pre-wrap; margin-top:8px; color:#e0e0e0;">
-            Loading logs...
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+        <h3>🌍 Прокси (Real-time)</h3>
+        
+        <!-- Кнопки управления Proxy Checker -->
+        <div style="display: flex; gap: 10px;">
+            <button hx-post="/proxy-checker-start" 
+                    hx-swap="none"
+                    class="btn btn-success">
+                ▶ Start Checker
+            </button>
+            <button hx-post="/proxy-checker-pause" 
+                    hx-swap="none"
+                    class="btn btn-warning">
+                ⏸ Pause
+            </button>
+            <button hx-post="/proxy-checker-resume" 
+                    hx-swap="none"
+                    class="btn btn-info">
+                ▶ Resume
+            </button>
+            <button hx-post="/proxy-checker-stop" 
+                    hx-swap="none"
+                    class="btn btn-danger">
+                ⏹ Stop
+            </button>
         </div>
     </div>
-
-    <!-- Buttons -->
-    <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:10px;">
-
-        <button class="btn"
-                hx-post="/proxy-checker-start"
-                hx-confirm="Start proxy checker?"
-                hx-target="#proxy-action-result"
-                hx-swap="innerHTML"
-                style="background:#2e7d32;">
-            ▶ Start
-        </button>
-
-        <button class="btn"
-                hx-post="/proxy-checker-pause"
-                hx-confirm="Pause checker?"
-                hx-target="#proxy-action-result"
-                hx-swap="innerHTML"
-                style="background:#f57c00;">
-            ⏸ Pause
-        </button>
-
-        <button class="btn"
-                hx-post="/proxy-checker-resume"
-                hx-target="#proxy-action-result"
-                hx-swap="innerHTML"
-                style="background:#1976d2;">
-            ▶ Resume
-        </button>
-
-        <button class="btn"
-                hx-post="/proxy-checker-stop"
-                hx-confirm="Stop checker?"
-                hx-target="#proxy-action-result"
-                hx-swap="innerHTML"
-                style="background:#d32f2f;">
-            ⛔ Stop
-        </button>
-
-        <button class="btn"
-                onclick="document.getElementById('proxy-logs').innerHTML='Logs cleared'"
-                style="background:#5c5c5c;">
-            🧹 Clear Logs
-        </button>
+    
+    <!-- Статус Proxy Checker -->
+    <div style="padding: 15px; background: rgba(0,0,0,0.03); border-radius: 8px; margin-bottom: 20px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                <strong>Статус:</strong> 
+                <span id="proxy-checker-status-main" 
+                      hx-get="/proxy-checker-status" 
+                      hx-trigger="every 3s"
+                      hx-swap="innerHTML">
+                    Loading...
+                </span>
+            </div>
+            <div style="font-size: 0.9em; opacity: 0.7;">
+                <span id="proxy-checker-logs-main" 
+                      hx-get="/proxy-checker-logs" 
+                      hx-trigger="every 3s"
+                      hx-swap="innerHTML">
+                </span>
+            </div>
+        </div>
     </div>
-
-    <!-- action result -->
-    <div id="proxy-action-result" style="margin-bottom:12px; min-height:20px;"></div>
-
-    <!-- Proxy table -->
-    <h3>📦 Live Proxy List (Top 50)</h3>
-
-    <table style="width:100%; border-collapse:collapse;">
-        <thead>
-            <tr style="background:#2a2a2a;">
-                <th style="padding:8px; text-align:left;">Host</th>
-                <th style="padding:8px; text-align:left;">Port</th>
-                <th style="padding:8px; text-align:left;">Geo</th>
-                <th style="padding:8px; text-align:left;">Anonymity</th>
-                <th style="padding:8px; text-align:left;">Speed</th>
-                <th style="padding:8px; text-align:left;">Status</th>
-            </tr>
-        </thead>
-
-        <tbody id="proxy-table-body"
-               hx-get="/proxy-table?limit=50"
-               hx-trigger="load, every 10s"
-               hx-swap="innerHTML">
-            <tr><td colspan="6" style="text-align:center; padding:20px;">Loading proxies...</td></tr>
-        </tbody>
-    </table>
+    
+    <!-- Загрузка прокси -->
+    <details style="margin-bottom: 20px;">
+        <summary style="cursor: pointer; padding: 10px; background: rgba(0,0,0,0.03); border-radius: 5px;">
+            📥 Загрузить прокси из файла
+        </summary>
+        <div style="padding: 15px; border: 1px solid rgba(0,0,0,0.1); border-top: none; border-radius: 0 0 5px 5px;">
+            <form hx-post="/upload-proxies" 
+                  hx-encoding="multipart/form-data"
+                  hx-target="#upload-result"
+                  hx-swap="innerHTML">
+                <div style="display: flex; gap: 10px; align-items: end;">
+                    <div style="flex: 1;">
+                        <label>Файл (host:port)</label>
+                        <input type="file" name="file" required style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px;">
+                    </div>
+                    <div>
+                        <label>GEO</label>
+                        <select name="geo" required style="padding: 8px; border: 1px solid #ccc; border-radius: 4px;">
+                            <option value="US">US</option>
+                            <option value="EU">EU</option>
+                            <option value="ASIA">ASIA</option>
+                        </select>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Загрузить</button>
+                </div>
+            </form>
+            <div id="upload-result" style="margin-top: 10px;"></div>
+        </div>
+    </details>
+    
+    <!-- Статистика -->
+    <div style="display: flex; gap: 15px; margin: 20px 0; flex-wrap: wrap;">
+        <div style="padding: 10px 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 8px;">
+            <strong id="rt-proxies-alive">-</strong> живых
+        </div>
+        <div style="padding: 10px 20px; background: rgba(0,0,0,0.1); border-radius: 8px;">
+            <strong id="rt-proxies-total">-</strong> всего
+        </div>
+        <div style="padding: 10px 20px; background: rgba(0,0,0,0.05); border-radius: 8px;">
+            <span id="rt-proxies-dead">-</span> мертвых
+        </div>
+    </div>
+    
+    <!-- Таблица -->
+    <div style="overflow-x: auto;">
+        <table style="width: 100%; border-collapse: collapse;">
+            <thead>
+                <tr style="background: rgba(0,0,0,0.05);">
+                    <th style="padding: 12px; text-align: left;">Host</th>
+                    <th style="padding: 12px; text-align: left;">Port</th>
+                    <th style="padding: 12px; text-align: left;">GEO</th>
+                    <th style="padding: 12px; text-align: left;">Anonymity</th>
+                    <th style="padding: 12px; text-align: left;">Speed</th>
+                    <th style="padding: 12px; text-align: left;">Status</th>
+                </tr>
+            </thead>
+            <tbody id="proxy-table-body">
+                <tr>
+                    <td colspan="6" style="text-align: center; padding: 40px; color: #999;">
+                        Загрузка...
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
 </div>
 
 <style>
 .btn {
     padding: 8px 16px;
     border: none;
-    border-radius: 4px;
-    color: white;
+    border-radius: 5px;
     cursor: pointer;
     font-size: 0.9em;
-    transition: opacity 0.2s;
+    transition: all 0.2s;
+    font-weight: 500;
 }
-.btn:hover {
-    opacity: 0.8;
+
+.btn-success {
+    background: #4caf50;
+    color: white;
+}
+
+.btn-success:hover {
+    background: #45a049;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(76, 175, 80, 0.3);
+}
+
+.btn-warning {
+    background: #ff9800;
+    color: white;
+}
+
+.btn-warning:hover {
+    background: #e68900;
+}
+
+.btn-info {
+    background: #2196f3;
+    color: white;
+}
+
+.btn-info:hover {
+    background: #0b7dda;
+}
+
+.btn-danger {
+    background: #f44336;
+    color: white;
+}
+
+.btn-danger:hover {
+    background: #da190b;
+}
+
+.btn-primary {
+    background: #667eea;
+    color: white;
+}
+
+.btn-primary:hover {
+    background: #5568d3;
+}
+
+#proxy-table-body tr {
+    border-bottom: 1px solid rgba(0,0,0,0.05);
+    transition: background 0.2s;
+}
+
+#proxy-table-body tr:hover {
+    background: rgba(0,0,0,0.02);
+}
+
+#proxy-table-body td {
+    padding: 12px;
+}
+
+.proxy-alive {
+    opacity: 1;
+}
+
+.proxy-dead {
+    opacity: 0.4;
+}
+
+.status-alive {
+    color: #4caf50;
+    font-weight: bold;
+}
+
+.status-dead {
+    color: #f44336;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.proxy-row-new {
+    animation: fadeIn 0.5s ease-out;
 }
 </style>
+
+<script>
+// WebSocket для таблицы прокси
+let proxyTableWs = null;
+let proxyReconnectTimeout = null;
+
+function connectProxyTableWebSocket() {
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsProtocol}//${window.location.host}/ws/proxy-table`;
+    
+    proxyTableWs = new WebSocket(wsUrl);
+    
+    proxyTableWs.onopen = function() {
+        console.log('✅ Proxy table WebSocket connected');
+    };
+    
+    proxyTableWs.onmessage = function(event) {
+        const message = JSON.parse(event.data);
+        
+        if (message.type === 'proxy_table_update') {
+            updateProxyTable(message.data);
+        }
+    };
+    
+    proxyTableWs.onerror = function(error) {
+        console.error('❌ Proxy table WebSocket error:', error);
+    };
+    
+    proxyTableWs.onclose = function() {
+        console.log('🔴 Proxy table WebSocket disconnected');
+        proxyReconnectTimeout = setTimeout(connectProxyTableWebSocket, 3000);
+    };
+}
+
+function updateProxyTable(proxies) {
+    const tbody = document.getElementById('proxy-table-body');
+    
+    if (!proxies || proxies.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="6" style="text-align: center; padding: 40px; color: #999;">
+                    Нет прокси. Запустите Proxy Checker для сбора.
+                </td>
+            </tr>
+        `;
+        return;
+    }
+    
+    // Считаем статистику
+    const aliveCount = proxies.filter(p => p.is_alive).length;
+    const deadCount = proxies.length - aliveCount;
+    
+    document.getElementById('rt-proxies-alive').textContent = aliveCount;
+    document.getElementById('rt-proxies-total').textContent = proxies.length;
+    document.getElementById('rt-proxies-dead').textContent = deadCount;
+    
+    // Формируем HTML таблицы
+    const html = proxies.map((proxy, index) => {
+        const rowClass = proxy.is_alive ? 'proxy-alive' : 'proxy-dead';
+        const statusIcon = proxy.is_alive ? '🟢' : '🔴';
+        const statusClass = proxy.is_alive ? 'status-alive' : 'status-dead';
+        const speedColor = proxy.is_alive ? '#4caf50' : '#999';
+        
+        return `
+            <tr class="${rowClass} proxy-row-new" style="animation-delay: ${index * 0.02}s;">
+                <td style="font-family: monospace;">${proxy.host}</td>
+                <td>${proxy.port}</td>
+                <td><strong>${proxy.geo}</strong></td>
+                <td>${proxy.anonymity}</td>
+                <td style="color: ${speedColor};">${proxy.speed_ms ? proxy.speed_ms + 'ms' : '-'}</td>
+                <td class="${statusClass}">${statusIcon} ${proxy.last_check}</td>
+            </tr>
+        `;
+    }).join('');
+    
+    tbody.innerHTML = html;
+}
+
+// Подключаемся при загрузке
+connectProxyTableWebSocket();
+
+// Переподключаемся при возвращении на вкладку
+document.addEventListener('visibilitychange', function() {
+    if (!document.hidden && (!proxyTableWs || proxyTableWs.readyState !== WebSocket.OPEN)) {
+        connectProxyTableWebSocket();
+    }
+});
+
+// Закрываем при уходе
+window.addEventListener('beforeunload', function() {
+    if (proxyTableWs) {
+        proxyTableWs.close();
+    }
+    if (proxyReconnectTimeout) {
+        clearTimeout(proxyReconnectTimeout);
+    }
+});
+</script>
