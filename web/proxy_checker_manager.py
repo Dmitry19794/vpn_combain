@@ -238,12 +238,12 @@ def start_proxy_checker():
 
     # Запускаем бинарник
     PROCESS = subprocess.Popen(
-        [PROXY_CHECKER_BIN, "--recheck-db"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        bufsize=1,
-        universal_newlines=False,  # ← КРИТИЧНО
-        close_fds=True
+    [PROXY_CHECKER_BIN, "--recheck-db"],
+    stdout=subprocess.PIPE,
+    stderr=subprocess.STDOUT,
+    bufsize=0,  # БЕЗ буферизации
+    universal_newlines=False,
+    close_fds=True
     )
 
     STATUS["running"] = True

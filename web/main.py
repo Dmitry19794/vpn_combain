@@ -614,106 +614,47 @@ async def checker_content(request: Request):
         "vpn_by_geo": vpn_by_geo
     })
 
-@app.get("/vpn-checker-status/{geo}", response_class=HTMLResponse)
+@app.get("/vpn-checker-status/{geo}")
 async def vpn_checker_status_geo(geo: str):
-    """Статус VPN checker для GEO - БЫСТРЫЙ"""
     try:
-        # НЕ используем Celery task - проверяем напрямую
+        import sys
+        sys.path.insert(0, '/opt/vpn/celery_app')
         from tasks import VPN_CHECKER_PROCESSES, VPN_CHECKER_LOCK
         
         with VPN_CHECKER_LOCK:
             if geo in VPN_CHECKER_PROCESSES:
                 proc = VPN_CHECKER_PROCESSES[geo]
                 if proc.poll() is None:
-                    return f'<span style="color:#2e7d32;">🟢 Running (PID: {proc.pid})</span>'
-        
-        return '<span style="color:#d32f2f;">🔴 Stopped</span>'
-        
-    except Exception as e:
-        return f'<span style="color:#ff8a80;">⚠️ Error</span>'
+                    return f'<span style="color:#2e7d32;">🟢 PID:{proc.pid}</span>'
+        return '<span style="color:#888;">⚪ Stopped</span>'
+    except:
+        return '<span style="color:#888;">⚪</span>'
+
 
 @app.post("/vpn-checker-start/{geo}")
 async def vpn_checker_start(geo: str):
-    """Запуск VPN checker - СИНХРОННО"""
-    if not is_valid_geo(geo):
-        raise HTTPException(status_code=400, detail=f"Invalid GEO: {geo}")
-    
     try:
-        # Запускаем напрямую БЕЗ Celery
+        import sys
+        sys.path.insert(0, '/opt/vpn/celery_app')
         from tasks import start_vpn_checker_for_geo
         
         success = start_vpn_checker_for_geo(geo)
-        
-        if success:
-            return {"status": "success", "message": f"Started for {geo}"}
-        else:
-            raise HTTPException(status_code=500, detail="Failed to start")
-            
+        return {"status": "ok" if success else "failed"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"status": "error", "message": str(e)}
+
 
 @app.post("/vpn-checker-stop/{geo}")
 async def vpn_checker_stop(geo: str):
-    """Остановка VPN checker - СИНХРОННО"""
     try:
+        import sys
+        sys.path.insert(0, '/opt/vpn/celery_app')
         from tasks import stop_vpn_checker_for_geo
         
         success = stop_vpn_checker_for_geo(geo)
-        
-        if success:
-            return {"status": "success", "message": f"Stopped for {geo}"}
-        else:
-            raise HTTPException(status_code=500, detail="Not running")
-            
+        return {"status": "ok" if success else "failed"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/vpn-checker-stats", response_class=HTMLResponse)
-async def vpn_checker_stats():
-    """Возвращает детальную статистику VPN checker"""
-    db = get_db()
-    cur = get_cursor(db)
-    
-    try:
-        # Статистика по VPN
-        cur.execute("""
-            SELECT 
-                geo,
-                protocol,
-                COUNT(*) as total,
-                COUNT(*) FILTER (WHERE status = 'new') as new_vpns,
-                COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '1 hour') as last_hour,
-                COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours') as last_day
-            FROM vpns
-            GROUP BY geo, protocol
-            ORDER BY total DESC
-            LIMIT 20
-        """)
-        vpn_stats = cur.fetchall()
-        
-    except Exception as e:
-        print(f"❌ vpn_checker_stats error: {e}")
-        vpn_stats = []
-    finally:
-        db_pool.putconn(db)
-    
-    if not vpn_stats:
-        return '<tr><td colspan="6" style="text-align:center; color:#888;">No VPNs found yet</td></tr>'
-    
-    html = ""
-    for row in vpn_stats:
-        html += f"""
-        <tr>
-            <td><strong>{row['geo']}</strong></td>
-            <td><span style="background:#2a2a2a; padding:2px 8px; border-radius:3px;">{row['protocol']}</span></td>
-            <td style="color:#a5d6a7; font-weight:bold;">{row['total']}</td>
-            <td style="color:#90caf9;">{row['new_vpns']}</td>
-            <td>{row['last_hour']}</td>
-            <td>{row['last_day']}</td>
-        </tr>
-        """
-    
-    return html
+        return {"status": "error", "message": str(e)}
 
 
 @app.get("/unchecked-addresses-stats", response_class=HTMLResponse)
@@ -1030,13 +971,9 @@ def read_proxy_output():
 
 @app.get("/scan-jobs-table", response_class=HTMLResponse)
 async def scan_jobs_table():
-    """Таблица задач - УПРОЩЕННАЯ ВЕРСИЯ"""
-    db = None
+    db = get_db()
     try:
-        db = get_db()
         cur = db.cursor()
-        
-        # МАКСИМАЛЬНО ПРОСТОЙ ЗАПРОС
         cur.execute("""
             SELECT 
                 j.id,
@@ -1050,10 +987,11 @@ async def scan_jobs_table():
             LEFT JOIN scan_subnets s ON j.subnet_id = s.id
             LEFT JOIN scan_ports p ON j.port_id = p.id
             ORDER BY j.created_at DESC
-            LIMIT 50
+            LIMIT 100
         """)
         
         rows = cur.fetchall()
+        print(f"DEBUG: Got {len(rows)} rows")
         
         if not rows:
             return "<tr><td colspan='8'>No jobs</td></tr>"
@@ -1061,25 +999,36 @@ async def scan_jobs_table():
         html = ""
         for row in rows:
             job_id = str(row[0])[:8]
-            cidr = row[1] or 'N/A'
-            port = row[2] or 0
-            geo = row[3] or 'N/A'
+            cidr = str(row[1]) if row[1] else 'N/A'
+            port = int(row[2]) if row[2] else 0
+            geo = str(row[3]) if row[3] else 'N/A'
             status = row[4]
-            progress = float(row[5] or 0)
-            results = int(row[6] or 0)
+            progress = float(row[5]) if row[5] else 0.0
+            results = int(row[6]) if row[6] else 0
             
-            html += f"<tr><td>{job_id}...</td><td><strong>{cidr}</strong></td><td>{port}</td><td>{geo}</td><td>{status}</td><td>{progress:.0f}%</td><td>{results}</td><td>-</td></tr>"
+            print(f"DEBUG: {cidr}:{port} ({geo}) - {status}")
+            
+            html += f"""
+            <tr>
+                <td>{job_id}</td>
+                <td><strong>{cidr}</strong></td>
+                <td>{port}</td>
+                <td>{geo}</td>
+                <td>{status}</td>
+                <td>{progress:.0f}%</td>
+                <td>{results}</td>
+                <td>-</td>
+            </tr>
+            """
         
         return html
-        
     except Exception as e:
         print(f"ERROR: {e}")
         import traceback
-        traceback.print_exc()
-        return f"<tr><td colspan='8'>Error: {str(e)}</td></tr>"
+        traceback.print_exc()        
+        return f"<tr><td colspan='8'>Error: {e}</td></tr>"
     finally:
-        if db:
-            db_pool.putconn(db)
+        db_pool.putconn(db)
 
 @app.get("/proxy-checker-status", response_class=HTMLResponse)
 async def proxy_checker_status_html():

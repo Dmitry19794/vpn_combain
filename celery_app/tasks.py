@@ -338,25 +338,26 @@ def parse_nmap_results(output_file: str, job_id: str, port: int, geo: str, conn)
     return total
 
 def insert_addresses_batch(conn, ips: List[str], port: int, geo: str, job_id: str) -> int:
-    """Вставка адресов батчами"""
+    """Вставка адресов - БЕЗ FOREIGN KEY"""
     if not ips:
         return 0
 
     cur = conn.cursor()
-    rows = [(ip, port, geo, job_id) for ip in ips]
+    rows = [(ip, port, geo) for ip in ips]  # УБРАЛИ job_id!
 
+    # УБИРАЕМ job_id из INSERT!
     sql = """
-        INSERT INTO scanned_addresses (id, ip, port, geo, job_id, is_checked, created_at, updated_at)
-        SELECT gen_random_uuid(), data.ip::inet, data.port, data.geo, data.job_id::uuid, FALSE, NOW(), NOW()
-        FROM (VALUES %s) AS data(ip, port, geo, job_id)
-        ON CONFLICT DO NOTHING
+        INSERT INTO scanned_addresses (id, ip, port, geo, is_checked, created_at, updated_at)
+        SELECT gen_random_uuid(), data.ip::inet, data.port, data.geo, FALSE, NOW(), NOW()
+        FROM (VALUES %s) AS data(ip, port, geo)
+        ON CONFLICT (ip, port) DO NOTHING
     """
 
     try:
         execute_values(cur, sql, rows)
         return len(rows)
     except Exception as e:
-        save_worker_error("insert_addresses_batch", str(e), tb.format_exc())
+        print(f"❌ insert_addresses_batch error: {e}")
         return 0
 
 # ============================================
