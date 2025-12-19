@@ -219,19 +219,40 @@ async def panel_content(request: Request):
         cur.execute("SELECT status, COUNT(*) FROM vpns GROUP BY status")
         vpn_status_counts = {r["status"]: r["count"] for r in cur.fetchall()}
         
+        # НОВОЕ: Статус VPN Checker
+        cur.execute("""
+            SELECT COUNT(*) as cnt
+            FROM scanned_addresses
+            WHERE is_checked = FALSE
+        """)
+        unchecked_count = cur.fetchone()['cnt']
+        
     except Exception as e:
         print(f"❌ panel_content error: {e}")
         running_count = 0
         vpn_total = 0
         vpn_status_counts = {}
+        unchecked_count = 0
     finally:
         db_pool.putconn(db)
+    
+    # VPN Checker статус
+    vpn_checker_running = 0
+    if CELERY_AVAILABLE:
+        try:
+            from tasks import get_vpn_checker_status
+            checker_status = get_vpn_checker_status()
+            vpn_checker_running = sum(1 for s in checker_status.values() if s.get('running'))
+        except Exception as e:
+            print(f"⚠️ Failed to get VPN checker status: {e}")
     
     return templates.TemplateResponse("partials/panel_content.html", {
         "request": request,
         "running_count": running_count,
         "vpn_total": vpn_total,
-        "vpn_status_counts": vpn_status_counts
+        "vpn_status_counts": vpn_status_counts,
+        "unchecked_count": unchecked_count,
+        "vpn_checker_running": vpn_checker_running
     })
 
 @app.get("/metrics-partial", response_class=HTMLResponse)
@@ -290,6 +311,7 @@ async def clear_masscan():
 # ========== WEBSOCKET ==========
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    """WebSocket для обновления задач - БЕЗ ОШИБОК"""
     await manager.connect(websocket)
     try:
         while True:
@@ -297,20 +319,46 @@ async def websocket_endpoint(websocket: WebSocket):
             db = get_db()
             cur = get_cursor(db)
             try:
+                # ИСПРАВЛЕНО: добавлены JOINS для получения CIDR, GEO, PORT
                 cur.execute("""
-                    SELECT j.id, j.status, j.progress_percent, j.result_count, j.control_action
+                    SELECT 
+                        j.id, 
+                        j.status, 
+                        j.progress_percent, 
+                        j.result_count, 
+                        j.control_action,
+                        s.cidr,
+                        s.geo,
+                        p.port
                     FROM scan_jobs j
-                    WHERE j.status IN ('running', 'paused', 'pending')
+                    LEFT JOIN scan_subnets s ON j.subnet_id = s.id
+                    LEFT JOIN scan_ports p ON j.port_id = p.id
+                    WHERE j.status IN ('running', 'paused', 'pending', 'queued')
                     ORDER BY j.created_at DESC
                     LIMIT 50
                 """)
                 jobs = cur.fetchall()
+                
+                # ИСПРАВЛЕНО: конвертируем Decimal и UUID в JSON-совместимые типы
+                jobs_data = []
+                for job in jobs:
+                    jobs_data.append({
+                        'id': str(job['id']),
+                        'status': job['status'],
+                        'progress_percent': float(job['progress_percent']) if job['progress_percent'] else 0.0,
+                        'result_count': int(job['result_count']) if job['result_count'] else 0,
+                        'control_action': job['control_action'],
+                        'cidr': job['cidr'],
+                        'geo': job['geo'],
+                        'port': int(job['port']) if job['port'] else 0
+                    })
+                
             finally:
                 db_pool.putconn(db)
 
             await websocket.send_json({
                 'type': 'jobs_update',
-                'jobs': [dict(job) for job in jobs]
+                'jobs': jobs_data
             })
     except WebSocketDisconnect:
         manager.disconnect(websocket)
@@ -320,40 +368,44 @@ async def websocket_endpoint(websocket: WebSocket):
 # ============================================
 @app.websocket("/ws/metrics")
 async def websocket_metrics(websocket: WebSocket):
-    """WebSocket для обновления метрик в реальном времени"""
-    await websocket.accept()
+    """WebSocket для метрик - БЕЗ ОШИБОК"""
+    try:
+        await websocket.accept()
+    except:
+        return
     
     try:
         while True:
+            # Проверяем состояние
+            try:
+                state = str(websocket.client_state)
+                if "CONNECTED" not in state:
+                    break
+            except:
+                break
+            
             db = None
             try:
                 db = get_db()
                 cur = get_cursor(db)
                 
-                # Собираем все метрики
                 metrics = {}
                 
-                # 1. Credential groups
                 cur.execute("SELECT COUNT(*) AS cnt FROM cred_groups;")
                 metrics['cred_groups'] = cur.fetchone()["cnt"]
                 
-                # 2. Logins
                 cur.execute("SELECT COUNT(*) AS cnt FROM logins;")
                 metrics['logins'] = cur.fetchone()["cnt"]
                 
-                # 3. Passwords
                 cur.execute("SELECT COUNT(*) AS cnt FROM passwords;")
                 metrics['passwords'] = cur.fetchone()["cnt"]
                 
-                # 4. Прокси (ТОЛЬКО ЖИВЫЕ)
                 cur.execute("SELECT COUNT(*) AS cnt FROM proxies WHERE is_alive = TRUE;")
                 metrics['proxies_alive'] = cur.fetchone()["cnt"]
                 
-                # 5. Прокси (ВСЕ)
                 cur.execute("SELECT COUNT(*) AS cnt FROM proxies;")
                 metrics['proxies_total'] = cur.fetchone()["cnt"]
                 
-                # 6. Прокси по GEO
                 cur.execute("""
                     SELECT geo, COUNT(*) as cnt 
                     FROM proxies 
@@ -365,11 +417,9 @@ async def websocket_metrics(websocket: WebSocket):
                 proxies_by_geo = [{"geo": r["geo"], "count": r["cnt"]} for r in cur.fetchall()]
                 metrics['proxies_by_geo'] = proxies_by_geo
                 
-                # 7. VPNs
                 cur.execute("SELECT COUNT(*) AS cnt FROM vpns;")
                 metrics['vpns'] = cur.fetchone()["cnt"]
                 
-                # 8. VPNs по статусу
                 cur.execute("""
                     SELECT status, COUNT(*) as cnt 
                     FROM vpns 
@@ -378,7 +428,6 @@ async def websocket_metrics(websocket: WebSocket):
                 vpns_by_status = {r["status"]: r["cnt"] for r in cur.fetchall()}
                 metrics['vpns_by_status'] = vpns_by_status
                 
-                # 9. Scan jobs статус
                 cur.execute("""
                     SELECT COUNT(*) as cnt
                     FROM scan_jobs
@@ -386,27 +435,28 @@ async def websocket_metrics(websocket: WebSocket):
                 """)
                 metrics['scan_jobs_active'] = cur.fetchone()["cnt"]
                 
-                # 10. Celery статус
                 celery_status = get_celery_worker_status()
                 metrics['celery_online'] = celery_status.get("online", False)
                 
-                # 11. Proxy checker статус
                 proxy_checker_status = get_proxy_checker_status()
                 metrics['proxy_checker_running'] = proxy_checker_status.get("running", False)
                 
-                # Отправляем данные
+                # Проверяем состояние СНОВА перед отправкой
+                try:
+                    state = str(websocket.client_state)
+                    if "CONNECTED" not in state:
+                        break
+                except:
+                    break
+                
                 await websocket.send_json({
                     "type": "metrics_update",
                     "data": metrics,
                     "timestamp": datetime.now().isoformat()
                 })
                 
-            except Exception as e:
-                print(f"❌ WebSocket metrics error: {e}")
-                await websocket.send_json({
-                    "type": "error",
-                    "message": str(e)
-                })
+            except:
+                break
             finally:
                 if db:
                     try:
@@ -414,19 +464,19 @@ async def websocket_metrics(websocket: WebSocket):
                     except:
                         pass
             
-            # Обновляем каждые 2 секунды
             await asyncio.sleep(2)
             
-    except WebSocketDisconnect:
-        print("📡 WebSocket metrics disconnected")
-    except Exception as e:
-        print(f"❌ WebSocket fatal error: {e}")
+    except:
+        pass
+    finally:
+        try:
+            await websocket.close()
+        except:
+            pass
 
 @app.websocket("/ws/proxy-table")
 async def websocket_proxy_table(websocket: WebSocket):
-    import logging
-    logging.getLogger("uvicorn.error").setLevel(logging.CRITICAL) 
-    
+    """FIXED WebSocket"""
     try:
         await websocket.accept()
     except:
@@ -434,8 +484,14 @@ async def websocket_proxy_table(websocket: WebSocket):
     
     try:
         while True:
-            # СНАЧАЛА проверяем что WebSocket ОТКРЫТ
-            if websocket.client_state.value != 1:  # 1 = CONNECTED
+            # Проверяем состояние
+            try:
+                state = websocket.client_state
+            except:
+                break
+            
+            # Если не подключен - выходим
+            if str(state) != "WebSocketState.CONNECTED":
                 break
             
             db = None
@@ -446,12 +502,12 @@ async def websocket_proxy_table(websocket: WebSocket):
                 cur.execute("""
                     SELECT host, port, geo, anonymity, speed_ms, is_alive, last_check
                     FROM proxies
-                    ORDER BY is_alive DESC, last_check DESC NULLS LAST
+                    WHERE is_alive = TRUE
+                    ORDER BY last_check DESC NULLS LAST
                     LIMIT 50;
                 """)
                 
                 rows = cur.fetchall()
-                
                 proxies = []
                 for r in rows:
                     proxies.append({
@@ -459,17 +515,26 @@ async def websocket_proxy_table(websocket: WebSocket):
                         "port": r[1],
                         "geo": r[2] or "unknown",
                         "anonymity": r[3] or "anonymous",
-                        "speed_ms": r[4] or 0,
+                        "speed_ms": int(r[4]) if r[4] is not None else 0,
                         "is_alive": r[5],
                         "last_check": r[6].strftime('%H:%M:%S') if r[6] else '-'
                     })
                 
-                # Отправляем ТОЛЬКО если WebSocket открыт
-                if websocket.client_state.value == 1:
-                    await websocket.send_json({
-                        "type": "proxy_table_update",
-                        "data": proxies
-                    })
+                # Проверяем СНОВА перед отправкой
+                try:
+                    state = websocket.client_state
+                except:
+                    break
+                
+                if str(state) == "WebSocketState.CONNECTED":
+                    try:
+                        await websocket.send_json({
+                            "type": "proxy_table_update",
+                            "data": proxies,
+                            "timestamp": datetime.now().isoformat()
+                        })
+                    except:
+                        break
                 else:
                     break
                 
@@ -483,9 +548,382 @@ async def websocket_proxy_table(websocket: WebSocket):
                         pass
             
             await asyncio.sleep(3)
-            
     except:
         pass
+    finally:
+        try:
+            await websocket.close()
+        except:
+            pass
+
+# ========== VPN CHECKER MANAGEMENT ==========
+
+@app.get("/checker-content", response_class=HTMLResponse)
+async def checker_content(request: Request):
+    """Страница управления VPN checker"""
+    db = get_db()
+    cur = get_cursor(db)
+    
+    try:
+        # Получаем статистику по непроверенным адресам
+        cur.execute("""
+            SELECT 
+                geo,
+                COUNT(*) as unchecked_count,
+                COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '1 hour') as last_hour
+            FROM scanned_addresses
+            WHERE is_checked = FALSE
+            GROUP BY geo
+            ORDER BY unchecked_count DESC
+        """)
+        unchecked_stats = cur.fetchall()
+        
+        # Получаем статистику VPN
+        cur.execute("""
+            SELECT 
+                geo,
+                protocol,
+                COUNT(*) as count
+            FROM vpns
+            GROUP BY geo, protocol
+            ORDER BY count DESC
+        """)
+        vpn_stats = cur.fetchall()
+        
+        # Группируем по GEO
+        vpn_by_geo = {}
+        for row in vpn_stats:
+            geo = row['geo']
+            if geo not in vpn_by_geo:
+                vpn_by_geo[geo] = []
+            vpn_by_geo[geo].append({
+                'protocol': row['protocol'],
+                'count': row['count']
+            })
+        
+    except Exception as e:
+        print(f"❌ checker_content error: {e}")
+        unchecked_stats = []
+        vpn_by_geo = {}
+    finally:
+        db_pool.putconn(db)
+    
+    return templates.TemplateResponse("partials/checker_content.html", {
+        "request": request,
+        "unchecked_stats": unchecked_stats,
+        "vpn_by_geo": vpn_by_geo
+    })
+
+@app.get("/vpn-checker-status/{geo}", response_class=HTMLResponse)
+async def vpn_checker_status_geo(geo: str):
+    """Статус VPN checker для GEO - БЫСТРЫЙ"""
+    try:
+        # НЕ используем Celery task - проверяем напрямую
+        from tasks import VPN_CHECKER_PROCESSES, VPN_CHECKER_LOCK
+        
+        with VPN_CHECKER_LOCK:
+            if geo in VPN_CHECKER_PROCESSES:
+                proc = VPN_CHECKER_PROCESSES[geo]
+                if proc.poll() is None:
+                    return f'<span style="color:#2e7d32;">🟢 Running (PID: {proc.pid})</span>'
+        
+        return '<span style="color:#d32f2f;">🔴 Stopped</span>'
+        
+    except Exception as e:
+        return f'<span style="color:#ff8a80;">⚠️ Error</span>'
+
+@app.post("/vpn-checker-start/{geo}")
+async def vpn_checker_start(geo: str):
+    """Запуск VPN checker - СИНХРОННО"""
+    if not is_valid_geo(geo):
+        raise HTTPException(status_code=400, detail=f"Invalid GEO: {geo}")
+    
+    try:
+        # Запускаем напрямую БЕЗ Celery
+        from tasks import start_vpn_checker_for_geo
+        
+        success = start_vpn_checker_for_geo(geo)
+        
+        if success:
+            return {"status": "success", "message": f"Started for {geo}"}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to start")
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/vpn-checker-stop/{geo}")
+async def vpn_checker_stop(geo: str):
+    """Остановка VPN checker - СИНХРОННО"""
+    try:
+        from tasks import stop_vpn_checker_for_geo
+        
+        success = stop_vpn_checker_for_geo(geo)
+        
+        if success:
+            return {"status": "success", "message": f"Stopped for {geo}"}
+        else:
+            raise HTTPException(status_code=500, detail="Not running")
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/vpn-checker-stats", response_class=HTMLResponse)
+async def vpn_checker_stats():
+    """Возвращает детальную статистику VPN checker"""
+    db = get_db()
+    cur = get_cursor(db)
+    
+    try:
+        # Статистика по VPN
+        cur.execute("""
+            SELECT 
+                geo,
+                protocol,
+                COUNT(*) as total,
+                COUNT(*) FILTER (WHERE status = 'new') as new_vpns,
+                COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '1 hour') as last_hour,
+                COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours') as last_day
+            FROM vpns
+            GROUP BY geo, protocol
+            ORDER BY total DESC
+            LIMIT 20
+        """)
+        vpn_stats = cur.fetchall()
+        
+    except Exception as e:
+        print(f"❌ vpn_checker_stats error: {e}")
+        vpn_stats = []
+    finally:
+        db_pool.putconn(db)
+    
+    if not vpn_stats:
+        return '<tr><td colspan="6" style="text-align:center; color:#888;">No VPNs found yet</td></tr>'
+    
+    html = ""
+    for row in vpn_stats:
+        html += f"""
+        <tr>
+            <td><strong>{row['geo']}</strong></td>
+            <td><span style="background:#2a2a2a; padding:2px 8px; border-radius:3px;">{row['protocol']}</span></td>
+            <td style="color:#a5d6a7; font-weight:bold;">{row['total']}</td>
+            <td style="color:#90caf9;">{row['new_vpns']}</td>
+            <td>{row['last_hour']}</td>
+            <td>{row['last_day']}</td>
+        </tr>
+        """
+    
+    return html
+
+
+@app.get("/unchecked-addresses-stats", response_class=HTMLResponse)
+async def unchecked_addresses_stats():
+    """Статистика непроверенных адресов"""
+    db = get_db()
+    cur = get_cursor(db)
+    
+    try:
+        cur.execute("""
+            SELECT 
+                geo,
+                port,
+                COUNT(*) as count,
+                MIN(created_at) as oldest,
+                MAX(created_at) as newest
+            FROM scanned_addresses
+            WHERE is_checked = FALSE
+            GROUP BY geo, port
+            ORDER BY count DESC
+            LIMIT 20
+        """)
+        stats = cur.fetchall()
+        
+    except Exception as e:
+        print(f"❌ unchecked_addresses_stats error: {e}")
+        stats = []
+    finally:
+        db_pool.putconn(db)
+    
+    if not stats:
+        return '<tr><td colspan="5" style="text-align:center; color:#888;">All addresses checked!</td></tr>'
+    
+    html = ""
+    for row in stats:
+        oldest = row['oldest'].strftime('%H:%M:%S') if row['oldest'] else '-'
+        newest = row['newest'].strftime('%H:%M:%S') if row['newest'] else '-'
+        
+        html += f"""
+        <tr>
+            <td><strong>{row['geo']}</strong></td>
+            <td>{row['port']}</td>
+            <td style="color:#ffcc80; font-weight:bold;">{row['count']}</td>
+            <td style="font-size:0.85em;">{oldest}</td>
+            <td style="font-size:0.85em;">{newest}</td>
+        </tr>
+        """
+    
+    return html
+
+    # ============================================
+# ДОБАВЬ В web/main.py
+# ============================================
+@app.get("/recent-vpns", response_class=HTMLResponse)
+async def recent_vpns():
+    """Возвращает последние найденные VPN"""
+    db = get_db()
+    cur = get_cursor(db)
+    
+    try:
+        cur.execute("""
+            SELECT 
+                v.id,
+                v.ip,
+                v.port,
+                v.geo,
+                v.protocol,
+                v.version,
+                v.status,
+                v.created_at,
+                v.target_url
+            FROM vpns v
+            ORDER BY v.created_at DESC
+            LIMIT 20
+        """)
+        vpns = cur.fetchall()
+        
+    except Exception as e:
+        print(f"❌ recent_vpns error: {e}")
+        vpns = []
+    finally:
+        db_pool.putconn(db)
+    
+    if not vpns:
+        return '<tr><td colspan="7" style="text-align:center; color:#888;">No VPNs found yet</td></tr>'
+    
+    html = ""
+    for vpn in vpns:
+        vpn_id = str(vpn['id'])
+        vpn_id_short = vpn_id[:8]
+        
+        # Время
+        created = vpn['created_at']
+        time_ago = (datetime.now() - created).total_seconds()
+        if time_ago < 60:
+            time_str = f"{int(time_ago)}s ago"
+        elif time_ago < 3600:
+            time_str = f"{int(time_ago/60)}m ago"
+        else:
+            time_str = f"{int(time_ago/3600)}h ago"
+        
+        # Статус
+        status = vpn['status']
+        status_colors = {
+            'new': '#90caf9',
+            'checking': '#ffb74d',
+            'vulnerable': '#a5d6a7',
+            'protected': '#ef5350',
+            'error': '#ff8a80'
+        }
+        status_color = status_colors.get(status, '#888')
+        
+        html += f"""
+        <tr>
+            <td style="font-size:0.85em; color:#bbb;">{time_str}</td>
+            <td style="font-family:monospace;">
+                <a href="{vpn['target_url']}" target="_blank" style="color:#90caf9; text-decoration:none;">
+                    {vpn['ip']}:{vpn['port']}
+                </a>
+            </td>
+            <td><span style="background:#333; padding:2px 6px; border-radius:3px; font-size:0.85em;">{vpn['geo']}</span></td>
+            <td><strong>{vpn['protocol']}</strong></td>
+            <td style="font-size:0.85em; color:#bbb;">{vpn['version'] or '-'}</td>
+            <td>
+                <span style="color:{status_color}; font-weight:bold; font-size:0.9em;">
+                    ● {status.upper()}
+                </span>
+            </td>
+            <td>
+                <button class="btn" 
+                        style="background:#2e7d32; padding:4px 8px; font-size:0.8em;"
+                        hx-post="/rebrut"
+                        hx-vals='{{"vpn_id": "{vpn_id}"}}'
+                        hx-swap="none"
+                        title="Rebrute this VPN">
+                    🔄 Rebrut
+                </button>
+            </td>
+        </tr>
+        """
+    
+    return html
+
+# ============================================
+# Обновление metrics для VPN checker
+# ============================================
+@app.get("/metrics-partial", response_class=HTMLResponse)
+async def metrics_partial(request: Request):
+    """Обновленная панель метрик с VPN checker статусом"""
+    db = get_db()
+    cur = get_cursor(db)
+
+    try:
+        cur.execute("SELECT COUNT(*) AS cnt FROM cred_groups;")
+        cred_groups = cur.fetchone()["cnt"]
+
+        cur.execute("SELECT COUNT(*) AS cnt FROM logins;")
+        logins = cur.fetchone()["cnt"]
+
+        cur.execute("SELECT COUNT(*) AS cnt FROM passwords;")
+        passwords = cur.fetchone()["cnt"]
+
+        cur.execute("SELECT COUNT(*) AS cnt FROM proxies WHERE is_alive = TRUE;")
+        proxies = cur.fetchone()["cnt"]
+
+        cur.execute("SELECT COUNT(*) AS cnt FROM vpns;")
+        vpns = cur.fetchone()["cnt"]
+        
+        # Новое: статистика VPN по статусам
+        cur.execute("""
+            SELECT status, COUNT(*) as cnt
+            FROM vpns
+            GROUP BY status
+        """)
+        vpn_status_counts = {r["status"]: r["cnt"] for r in cur.fetchall()}
+        
+        # Новое: непроверенные адреса
+        cur.execute("SELECT COUNT(*) AS cnt FROM scanned_addresses WHERE is_checked = FALSE;")
+        unchecked = cur.fetchone()["cnt"]
+
+    except Exception as e:
+        print("METRICS ERROR:", e)
+        cred_groups = logins = passwords = proxies = vpns = unchecked = 0
+        vpn_status_counts = {}
+
+    finally:
+        db_pool.putconn(db)
+    
+    # Статус VPN Checker
+    vpn_checker_running = 0
+    if CELERY_AVAILABLE:
+        try:
+            from tasks import get_vpn_checker_status
+            checker_status = get_vpn_checker_status()
+            vpn_checker_running = sum(1 for s in checker_status.values() if s.get('running'))
+        except:
+            pass
+
+    return templates.TemplateResponse("partials/metrics_partial.html", {
+        "request": request,
+        "cred_groups": cred_groups,
+        "logins": logins,
+        "passwords": passwords,
+        "proxies": proxies,
+        "vpns": vpns,
+        "vpn_status_counts": vpn_status_counts,
+        "unchecked": unchecked,
+        "vpn_checker_running": vpn_checker_running
+    }
+    )
 
 # ========== API ENDPOINTS ==========
 @app.get("/api/jobs-status")
@@ -592,149 +1030,56 @@ def read_proxy_output():
 
 @app.get("/scan-jobs-table", response_class=HTMLResponse)
 async def scan_jobs_table():
-    """Возвращает HTML таблицу активных задач с кнопками управления"""
-    db = get_db()
-    cur = get_cursor(db)
-    
+    """Таблица задач - УПРОЩЕННАЯ ВЕРСИЯ"""
+    db = None
     try:
+        db = get_db()
+        cur = db.cursor()
+        
+        # МАКСИМАЛЬНО ПРОСТОЙ ЗАПРОС
         cur.execute("""
             SELECT 
-                j.id, 
-                s.cidr, 
-                p.port, 
-                s.geo, 
+                j.id,
+                s.cidr,
+                p.port,
+                s.geo,
                 j.status,
                 j.progress_percent,
-                j.result_count,
-                j.started_at,
-                j.control_action
+                j.result_count
             FROM scan_jobs j
-            JOIN scan_subnets s ON j.subnet_id = s.id
-            JOIN scan_ports p ON j.port_id = p.id
-            WHERE j.status IN ('pending', 'running', 'paused', 'queued')
-            ORDER BY 
-                CASE 
-                    WHEN j.status = 'running' THEN 0
-                    WHEN j.status = 'paused' THEN 1
-                    WHEN j.status = 'queued' THEN 2
-                    ELSE 3
-                END,
-                j.created_at DESC
+            LEFT JOIN scan_subnets s ON j.subnet_id = s.id
+            LEFT JOIN scan_ports p ON j.port_id = p.id
+            ORDER BY j.created_at DESC
             LIMIT 50
         """)
-        jobs = cur.fetchall()
+        
+        rows = cur.fetchall()
+        
+        if not rows:
+            return "<tr><td colspan='8'>No jobs</td></tr>"
+        
+        html = ""
+        for row in rows:
+            job_id = str(row[0])[:8]
+            cidr = row[1] or 'N/A'
+            port = row[2] or 0
+            geo = row[3] or 'N/A'
+            status = row[4]
+            progress = float(row[5] or 0)
+            results = int(row[6] or 0)
+            
+            html += f"<tr><td>{job_id}...</td><td><strong>{cidr}</strong></td><td>{port}</td><td>{geo}</td><td>{status}</td><td>{progress:.0f}%</td><td>{results}</td><td>-</td></tr>"
+        
+        return html
         
     except Exception as e:
-        print(f"❌ scan_jobs_table error: {e}")
-        return "<tr><td colspan='8' style='color:#ff8a80;'>Database error</td></tr>"
+        print(f"ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        return f"<tr><td colspan='8'>Error: {str(e)}</td></tr>"
     finally:
-        db_pool.putconn(db)
-    
-    if not jobs:
-        return """
-        <tr>
-            <td colspan="8" style="text-align:center; color:#888; padding:20px;">
-                No active jobs. Create new scan task above.
-            </td>
-        </tr>
-        """
-    
-    html = ""
-    for job in jobs:
-        job_id = str(job['id'])
-        job_id_short = job_id[:8]
-        cidr = job['cidr']
-        port = job['port']
-        geo = job['geo']
-        status = job['status']
-        progress = job.get('progress_percent') or 0
-        results = job.get('result_count') or 0
-        
-        # Цвета статусов
-        status_colors = {
-            'pending': '#888',
-            'queued': '#1976d2',
-            'running': '#2e7d32',
-            'paused': '#f57c00',
-        }
-        status_color = status_colors.get(status, '#888')
-        
-        # Кнопки в зависимости от статуса
-        if status == 'pending' or status == 'queued':
-            actions = f"""
-            <button class="btn" 
-                    style="background:#2e7d32; padding:4px 8px; font-size:0.85em;"
-                    hx-post="/api/control-job" 
-                    hx-vals='{{"job_id": "{job_id}", "action": "resume"}}'
-                    hx-swap="none"
-                    hx-on="htmx:afterRequest: htmx.trigger('#scan-jobs-tbody', 'load')">
-                ▶ Start
-            </button>
-            """
-        elif status == 'running':
-            actions = f"""
-            <button class="btn" 
-                    style="background:#f57c00; padding:4px 8px; font-size:0.85em;"
-                    hx-post="/api/control-job" 
-                    hx-vals='{{"job_id": "{job_id}", "action": "pause"}}'
-                    hx-swap="none"
-                    hx-on="htmx:afterRequest: htmx.trigger('#scan-jobs-tbody', 'load')">
-                ⏸ Pause
-            </button>
-            <button class="btn" 
-                    style="background:#d32f2f; padding:4px 8px; font-size:0.85em; margin-left:4px;"
-                    hx-post="/api/control-job" 
-                    hx-vals='{{"job_id": "{job_id}", "action": "stop"}}'
-                    hx-confirm="Stop this job?"
-                    hx-swap="none"
-                    hx-on="htmx:afterRequest: htmx.trigger('#scan-jobs-tbody', 'load')">
-                ⛔ Stop
-            </button>
-            """
-        elif status == 'paused':
-            actions = f"""
-            <button class="btn" 
-                    style="background:#2e7d32; padding:4px 8px; font-size:0.85em;"
-                    hx-post="/api/control-job" 
-                    hx-vals='{{"job_id": "{job_id}", "action": "resume"}}'
-                    hx-swap="none"
-                    hx-on="htmx:afterRequest: htmx.trigger('#scan-jobs-tbody', 'load')">
-                ▶ Resume
-            </button>
-            <button class="btn" 
-                    style="background:#d32f2f; padding:4px 8px; font-size:0.85em; margin-left:4px;"
-                    hx-post="/api/control-job" 
-                    hx-vals='{{"job_id": "{job_id}", "action": "stop"}}'
-                    hx-confirm="Stop this job?"
-                    hx-swap="none"
-                    hx-on="htmx:afterRequest: htmx.trigger('#scan-jobs-tbody', 'load')">
-                ⛔ Stop
-            </button>
-            """
-        else:
-            actions = "—"
-        
-        html += f"""
-        <tr>
-            <td style="font-family:monospace; font-size:0.85em;">{job_id_short}...</td>
-            <td><strong>{cidr}</strong></td>
-            <td>{port}</td>
-            <td><span style="background:#333; padding:2px 6px; border-radius:3px; font-size:0.85em;">{geo}</span></td>
-            <td><span style="color:{status_color}; font-weight:bold; font-size:0.9em;">● {status.upper()}</span></td>
-            <td>
-                <div style="background:#333; border-radius:3px; height:20px; position:relative; overflow:hidden; min-width:80px;">
-                    <div style="background:#2e7d32; height:100%; width:{progress}%; transition:width 0.3s;"></div>
-                    <span style="position:absolute; left:50%; top:50%; transform:translate(-50%, -50%); font-size:0.75em; font-weight:bold; color:#fff;">
-                        {progress}%
-                    </span>
-                </div>
-            </td>
-            <td style="color:#a5d6a7; font-weight:bold;">{results}</td>
-            <td style="white-space:nowrap;">{actions}</td>
-        </tr>
-        """
-    
-    return html
+        if db:
+            db_pool.putconn(db)
 
 @app.get("/proxy-checker-status", response_class=HTMLResponse)
 async def proxy_checker_status_html():
@@ -1206,7 +1551,59 @@ def checker_status_endpoint():
 
 @app.get("/checker-content", response_class=HTMLResponse)
 async def checker_content(request: Request):
-    return templates.TemplateResponse("checker_content.html", {"request": request})
+    """Страница VPN Checker - БЕЗ ТАЙМАУТОВ"""
+    db = get_db()
+    cur = get_cursor(db)
+    
+    try:
+        # Статистика непроверенных адресов
+        cur.execute("""
+            SELECT 
+                geo,
+                COUNT(*) as unchecked_count,
+                COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '1 hour') as last_hour
+            FROM scanned_addresses
+            WHERE is_checked = FALSE
+            GROUP BY geo
+            ORDER BY unchecked_count DESC
+        """)
+        unchecked_stats = cur.fetchall()
+        
+        # Статистика VPN
+        cur.execute("""
+            SELECT 
+                geo,
+                protocol,
+                COUNT(*) as count
+            FROM vpns
+            GROUP BY geo, protocol
+            ORDER BY count DESC
+        """)
+        vpn_stats = cur.fetchall()
+        
+        # Группируем по GEO
+        vpn_by_geo = {}
+        for row in vpn_stats:
+            geo = row['geo']
+            if geo not in vpn_by_geo:
+                vpn_by_geo[geo] = []
+            vpn_by_geo[geo].append({
+                'protocol': row['protocol'],
+                'count': row['count']
+            })
+        
+    except Exception as e:
+        print(f"❌ checker_content error: {e}")
+        unchecked_stats = []
+        vpn_by_geo = {}
+    finally:
+        db_pool.putconn(db)
+    
+    return templates.TemplateResponse("partials/checker_content.html", {
+        "request": request,
+        "unchecked_stats": unchecked_stats,
+        "vpn_by_geo": vpn_by_geo
+    })
 
 # ========== ОСТАЛЬНЫЕ ENDPOINTS ==========
 
@@ -1303,6 +1700,16 @@ async def masscan_content(request: Request):
     process_status = await scan_process_status(request)
     jobs_status = await scan_jobs_status(request)
     return templates.TemplateResponse("partials/masscan_content.html", {
+        "request": request,
+        "process_status": process_status.body.decode('utf-8'),
+        "jobs_status": jobs_status.body.decode('utf-8')
+    })
+
+@app.get("/settings-content", response_class=HTMLResponse)
+async def masscan_content(request: Request):
+    process_status = await scan_process_status(request)
+    jobs_status = await scan_jobs_status(request)
+    return templates.TemplateResponse("partials/settings_content.html", {
         "request": request,
         "process_status": process_status.body.decode('utf-8'),
         "jobs_status": jobs_status.body.decode('utf-8')

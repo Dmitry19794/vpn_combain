@@ -1,375 +1,146 @@
+<!-- web/templates/partials/panel_content.html -->
+
+<!-- Статистика (Real-time) -->
 <div class="card">
     <h3>📊 Статистика (Real-time)</h3>
     
-    <!-- Метрики -->
-    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin: 20px 0;">
-        
-        <!-- Прокси -->
-        <div class="metric-card" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 10px; color: white;">
-            <div style="font-size: 0.9em; opacity: 0.9;">🌍 Прокси (Живые)</div>
-            <div id="proxies-alive" style="font-size: 2em; font-weight: bold; margin: 10px 0;">-</div>
-            <div style="font-size: 0.8em; opacity: 0.7;">Всего: <span id="proxies-total">-</span></div>
-        </div>
-        
-        <!-- VPN -->
-        <div class="metric-card" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); padding: 20px; border-radius: 10px; color: white;">
-            <div style="font-size: 0.9em; opacity: 0.9;">🔐 VPN</div>
-            <div id="vpns-count" style="font-size: 2em; font-weight: bold; margin: 10px 0;">-</div>
-            <div style="font-size: 0.8em; opacity: 0.7;">
-                New: <span id="vpns-new">-</span> | 
-                Checked: <span id="vpns-checked">-</span>
-            </div>
-        </div>
-        
-        <!-- Credentials -->
-        <div class="metric-card" style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); padding: 20px; border-radius: 10px; color: white;">
-            <div style="font-size: 0.9em; opacity: 0.9;">🔑 Credentials</div>
-            <div id="cred-groups" style="font-size: 2em; font-weight: bold; margin: 10px 0;">-</div>
-            <div style="font-size: 0.8em; opacity: 0.7;">
-                Logins: <span id="logins">-</span> | 
-                Passwords: <span id="passwords">-</span>
-            </div>
-        </div>
-        
+    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:16px;">
         <!-- Scan Jobs -->
-        <div class="metric-card" style="background: linear-gradient(135deg, #fa709a 0%, #fee140 100%); padding: 20px; border-radius: 10px; color: white;">
-            <div style="font-size: 0.9em; opacity: 0.9;">🔍 Scan Jobs</div>
-            <div id="scan-jobs-active" style="font-size: 2em; font-weight: bold; margin: 10px 0;">-</div>
-            <div style="font-size: 0.8em; opacity: 0.7;">Active</div>
+        <div style="text-align:center; padding:16px; background:#252525; border-radius:6px;">
+            <div style="font-size:2em; font-weight:bold; color:#2196f3;">{{ running_count }}</div>
+            <div style="font-size:0.85em; color:#bbb; margin-top:4px;">Active Scans</div>
         </div>
         
-    </div>
-    
-    <!-- Прокси по GEO -->
-    <div style="margin: 20px 0;">
-        <h4 style="margin-bottom: 10px;">🌍 Прокси по странам</h4>
-        <div id="proxies-by-geo" style="display: flex; gap: 10px; flex-wrap: wrap;">
-            <!-- Будет заполнено через WebSocket -->
+        <!-- VPNs Total -->
+        <div style="text-align:center; padding:16px; background:#252525; border-radius:6px;">
+            <div style="font-size:2em; font-weight:bold; color:#4caf50;">{{ vpn_total }}</div>
+            <div style="font-size:0.85em; color:#bbb; margin-top:4px;">Total VPNs</div>
+            {% if vpn_status_counts %}
+            <div style="font-size:0.7em; color:#888; margin-top:6px;">
+                {% for status, count in vpn_status_counts.items() %}
+                    <div>{{ status }}: {{ count }}</div>
+                {% endfor %}
+            </div>
+            {% endif %}
         </div>
-    </div>
-    
-    <!-- СТАТУС СЕРВИСОВ (полная версия) -->
-    <div style="margin: 20px 0;">
-        <h4 style="margin-bottom: 10px;">⚙️ Статус сервисов</h4>
         
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px;">
-            
-            <!-- Celery -->
-            <div class="service-card">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span id="celery-status">🔴 Celery: Offline</span>
-                    <span id="celery-info" style="font-size: 0.8em; opacity: 0.7;"></span>
-                </div>
-            </div>
-            
-            <!-- Database -->
-            <div class="service-card">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span id="db-status">🔴 Database: Offline</span>
-                    <span id="db-info" style="font-size: 0.8em; opacity: 0.7;"></span>
-                </div>
-            </div>
-            
-            <!-- Frontend -->
-            <div class="service-card">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span id="frontend-status">🟢 Frontend: Online</span>
-                    <span style="font-size: 0.8em; opacity: 0.7;">FastAPI</span>
-                </div>
-            </div>
-            
-            <!-- Brute -->
-            <div class="service-card">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span id="brute-status">⚪ Brute: Idle</span>
-                    <span id="brute-info" style="font-size: 0.8em; opacity: 0.7;"></span>
-                </div>
-            </div>
-            
-            <!-- VPN Checker -->
-            <div class="service-card">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span id="checker-status">⚪ VPN Checker: Idle</span>
-                    <span id="checker-info" style="font-size: 0.8em; opacity: 0.7;"></span>
-                </div>
-            </div>
-            
-            <!-- Proxy Checker -->
-            <div class="service-card">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span id="proxy-checker-status-text">🔴 Proxy Checker: Stopped</span>
-                    <div style="display: flex; gap: 5px;">
-                        <button hx-post="/proxy-checker-start" 
-                                hx-swap="none"
-                                class="btn-mini btn-success" 
-                                title="Start">▶</button>
-                        <button hx-post="/proxy-checker-pause" 
-                                hx-swap="none"
-                                class="btn-mini btn-warning" 
-                                title="Pause">⏸</button>
-                        <button hx-post="/proxy-checker-stop" 
-                                hx-swap="none"
-                                class="btn-mini btn-danger" 
-                                title="Stop">⏹</button>
-                    </div>
-                </div>
-                <div id="proxy-checker-logs" style="font-size: 0.8em; margin-top: 5px; opacity: 0.7;"></div>
-            </div>
-            
+        <!-- Unchecked Addresses -->
+        <div style="text-align:center; padding:16px; background:#252525; border-radius:6px;">
+            <div style="font-size:2em; font-weight:bold; color:#ff9800;">{{ unchecked_count }}</div>
+            <div style="font-size:0.85em; color:#bbb; margin-top:4px;">Unchecked Queue</div>
         </div>
-    </div>
-    
-    <!-- Индикатор подключения WebSocket -->
-    <div id="ws-connection-status" style="position: fixed; bottom: 20px; right: 20px; padding: 10px 20px; background: #4caf50; color: white; border-radius: 5px; display: none; z-index: 9999;">
-        🟢 Connected
+        
+        <!-- VPN Checker Status -->
+        <div style="text-align:center; padding:16px; background:#252525; border-radius:6px;">
+            <div style="font-size:2em; font-weight:bold; color:#64b5f6;">{{ vpn_checker_running }}</div>
+            <div style="font-size:0.85em; color:#bbb; margin-top:4px;">VPN Checkers</div>
+            <div style="font-size:0.7em; margin-top:6px;">
+                {% if vpn_checker_running > 0 %}
+                    <span style="color:#4caf50;">🟢 Active</span>
+                {% else %}
+                    <span style="color:#888;">⚪ Idle</span>
+                {% endif %}
+            </div>
+        </div>
     </div>
 </div>
 
-<style>
-.metric-card {
-    transition: transform 0.2s, box-shadow 0.2s;
-    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-}
-
-.metric-card:hover {
-    transform: translateY(-5px);
-    box-shadow: 0 8px 15px rgba(0,0,0,0.2);
-}
-
-.geo-badge {
-    display: inline-block;
-    padding: 8px 15px;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    color: white;
-    border-radius: 20px;
-    font-size: 0.9em;
-}
-
-.service-card {
-    padding: 12px 15px;
-    background: rgba(0,0,0,0.03);
-    border-radius: 8px;
-    border-left: 3px solid transparent;
-    transition: all 0.2s;
-}
-
-.service-card:hover {
-    background: rgba(0,0,0,0.05);
-    border-left-color: #667eea;
-}
-
-.btn-mini {
-    padding: 4px 8px;
-    font-size: 0.8em;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    transition: all 0.2s;
-}
-
-.btn-success {
-    background: #4caf50;
-    color: white;
-}
-
-.btn-success:hover {
-    background: #45a049;
-}
-
-.btn-warning {
-    background: #ff9800;
-    color: white;
-}
-
-.btn-warning:hover {
-    background: #e68900;
-}
-
-.btn-danger {
-    background: #f44336;
-    color: white;
-}
-
-.btn-danger:hover {
-    background: #da190b;
-}
-
-#ws-connection-status {
-    animation: slideIn 0.3s ease-out;
-}
-
-@keyframes slideIn {
-    from {
-        transform: translateX(100%);
-        opacity: 0;
-    }
-    to {
-        transform: translateX(0);
-        opacity: 1;
-    }
-}
-
-.metric-updating {
-    animation: pulse 0.5s ease-in-out;
-}
-
-@keyframes pulse {
-    0%, 100% { transform: scale(1); }
-    50% { transform: scale(1.05); }
-}
-</style>
-
-<script>
-// WebSocket подключение для метрик
-let metricsWs = null;
-let reconnectTimeout = null;
-
-function connectMetricsWebSocket() {
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${wsProtocol}//${window.location.host}/ws/metrics`;
+<!-- System Status -->
+<div class="card">
+    <h3>🖥️ System Status</h3>
     
-    metricsWs = new WebSocket(wsUrl);
-    
-    metricsWs.onopen = function() {
-        console.log('✅ WebSocket connected');
-        showConnectionStatus('🟢 Connected', '#4caf50');
-    };
-    
-    metricsWs.onmessage = function(event) {
-        const message = JSON.parse(event.data);
-        
-        if (message.type === 'metrics_update') {
-            updateMetrics(message.data);
-        } else if (message.type === 'error') {
-            console.error('WebSocket error:', message.message);
-        }
-    };
-    
-    metricsWs.onerror = function(error) {
-        console.error('❌ WebSocket error:', error);
-    };
-    
-    metricsWs.onclose = function() {
-        console.log('🔴 WebSocket disconnected');
-        showConnectionStatus('🔴 Reconnecting...', '#f44336');
-        reconnectTimeout = setTimeout(connectMetricsWebSocket, 3000);
-    };
-}
-
-function showConnectionStatus(text, color) {
-    const status = document.getElementById('ws-connection-status');
-    status.style.display = 'block';
-    status.style.background = color;
-    status.textContent = text;
-    
-    if (color === '#4caf50') {
-        setTimeout(() => {
-            status.style.display = 'none';
-        }, 3000);
-    }
-}
-
-function updateMetrics(data) {
-    // Анимация при обновлении
-    const animateElement = (id, value) => {
-        const el = document.getElementById(id);
-        if (el) {
-            el.classList.add('metric-updating');
-            el.textContent = value.toLocaleString();
-            setTimeout(() => el.classList.remove('metric-updating'), 500);
-        }
-    };
-    
-    // Обновляем счетчики
-    animateElement('proxies-alive', data.proxies_alive);
-    animateElement('proxies-total', data.proxies_total);
-    animateElement('vpns-count', data.vpns);
-    animateElement('cred-groups', data.cred_groups);
-    animateElement('logins', data.logins);
-    animateElement('passwords', data.passwords);
-    animateElement('scan-jobs-active', data.scan_jobs_active);
-    
-    // VPN по статусу
-    if (data.vpns_by_status) {
-        document.getElementById('vpns-new').textContent = data.vpns_by_status.new || 0;
-        document.getElementById('vpns-checked').textContent = data.vpns_by_status.checked || 0;
-    }
-    
-    // Прокси по GEO
-    if (data.proxies_by_geo) {
-        const geoContainer = document.getElementById('proxies-by-geo');
-        geoContainer.innerHTML = data.proxies_by_geo.map(item => `
-            <div class="geo-badge">
-                <strong>${item.geo}</strong>: ${item.count}
+    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:12px;">
+        <!-- Celery Worker -->
+        <div style="padding:12px; background:#252525; border-radius:6px;">
+            <div style="font-weight:bold; margin-bottom:6px; color:#90caf9;">Celery Worker</div>
+            <div id="celery-status" 
+                 hx-get="/celery-status" 
+                 hx-trigger="load, every 10s" 
+                 hx-swap="innerHTML">
+                Loading...
             </div>
-        `).join('');
-    }
-    
-    // Статус Celery
-    const celeryEl = document.getElementById('celery-status');
-    if (data.celery_online) {
-        celeryEl.innerHTML = '🟢 Celery: Online';
-        celeryEl.style.color = '#4caf50';
-    } else {
-        celeryEl.innerHTML = '🔴 Celery: Offline';
-        celeryEl.style.color = '#f44336';
-    }
-    
-    // Статус Database (всегда online если данные приходят)
-    const dbEl = document.getElementById('db-status');
-    dbEl.innerHTML = '🟢 Database: Online';
-    dbEl.style.color = '#4caf50';
-    
-    // Статус Proxy Checker
-    const checkerEl = document.getElementById('proxy-checker-status-text');
-    if (data.proxy_checker_running) {
-        checkerEl.innerHTML = '🟢 Proxy Checker: Running';
-        checkerEl.style.color = '#4caf50';
-    } else {
-        checkerEl.innerHTML = '🔴 Proxy Checker: Stopped';
-        checkerEl.style.color = '#f44336';
-    }
-}
-
-// Обновляем статус/логи Proxy Checker отдельно
-setInterval(function() {
-    fetch('/proxy-checker-status')
-        .then(r => r.text())
-        .then(html => {
-            // Обновляем только если элемент есть
-            const el = document.getElementById('proxy-checker-status-text');
-            if (el && html) {
-                el.innerHTML = html;
-            }
-        });
+        </div>
         
-    fetch('/proxy-checker-logs')
-        .then(r => r.text())
-        .then(html => {
-            const el = document.getElementById('proxy-checker-logs');
-            if (el && html) {
-                el.innerHTML = html;
-            }
-        });
-}, 5000);
+        <!-- Proxy Checker -->
+        <div style="padding:12px; background:#252525; border-radius:6px;">
+            <div style="font-weight:bold; margin-bottom:6px; color:#a5d6a7;">Proxy Checker</div>
+            <div id="proxy-checker-status"
+                 hx-get="/proxy-checker-status"
+                 hx-trigger="load, every 5s"
+                 hx-swap="innerHTML">
+                Loading...
+            </div>
+        </div>
+        
+        <!-- VPN Checker Details -->
+        <div style="padding:12px; background:#252525; border-radius:6px;">
+            <div style="font-weight:bold; margin-bottom:6px; color:#ffb74d;">VPN Checker</div>
+            <div style="font-size:0.85em;">
+                {% if vpn_checker_running > 0 %}
+                    <div style="color:#4caf50; margin-bottom:4px;">
+                        ✅ {{ vpn_checker_running }} checker(s) running
+                    </div>
+                    <div style="font-size:0.75em; color:#888;">
+                        Processing {{ unchecked_count }} addresses
+                    </div>
+                {% else %}
+                    <div style="color:#888;">
+                        ⚪ No active checkers
+                    </div>
+                    {% if unchecked_count > 0 %}
+                    <div style="font-size:0.75em; color:#ff9800; margin-top:4px;">
+                        {{ unchecked_count }} addresses waiting
+                    </div>
+                    {% endif %}
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
 
-// Подключаемся при загрузке страницы
-connectMetricsWebSocket();
-
-// Переподключаемся при возвращении на вкладку
-document.addEventListener('visibilitychange', function() {
-    if (!document.hidden && (!metricsWs || metricsWs.readyState !== WebSocket.OPEN)) {
-        connectMetricsWebSocket();
-    }
-});
-
-// Закрываем соединение при уходе со страницы
-window.addEventListener('beforeunload', function() {
-    if (metricsWs) {
-        metricsWs.close();
-    }
-    if (reconnectTimeout) {
-        clearTimeout(reconnectTimeout);
-    }
-});
-</script>
+<!-- Quick Actions - ИСПРАВЛЕНО -->
+<div class="card">
+    <h3>⚡ Quick Actions</h3>
+    
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="btn" 
+                style="background:#2e7d32;"
+                hx-get="/masscan-content"
+                hx-target="#main-content"
+                hx-swap="innerHTML">
+            📡 Create Scan
+        </button>
+        
+        <button class="btn" 
+                style="background:#1976d2;"
+                hx-get="/checker-content"
+                hx-target="#main-content"
+                hx-swap="innerHTML">
+            🔍 Manage Checkers
+        </button>
+        
+        <button class="btn" 
+                style="background:#f57c00;"
+                hx-get="/proxy-content"
+                hx-target="#main-content"
+                hx-swap="innerHTML">
+            🔧 Manage Proxies
+        </button>
+        
+        <button class="btn" 
+                style="background:#7b1fa2;"
+                hx-get="/vpns-content"
+                hx-target="#main-content"
+                hx-swap="innerHTML">
+            🌐 View VPNs
+        </button>
+        
+        <button class="btn" 
+                style="background:#5e35b1;"
+                hx-get="/credentials-content"
+                hx-target="#main-content"
+                hx-swap="innerHTML">
+            🔑 Credentials
+        </button>
+    </div>
+</div>

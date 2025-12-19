@@ -31,11 +31,24 @@ _CACHE_LOCK = threading.Lock()
 _LAST_FLUSH = time.time()
 
 # ===============================
-# ИСПРАВЛЕННАЯ РЕГУЛЯРКА (без ✓)
+# ИСПРАВЛЕННЫЕ РЕГУЛЯРКИ
 # ===============================
-# Формат: 123.30.154.171:7777 | US | anonymous | avg: 312ms
+
+# 1. Для строк с прокси (с ✅/✗ в начале)
+# Примеры:
+# ✅ 123.30.154.171:7777 | US | anonymous | avg: 312ms
+# ✗ 45.66.77.88:8080 | EU | transparent | avg: 5.2s
 PROXY_REGEX = re.compile(
-    r"([\d\.]+):(\d+)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*avg:\s*([0-9\.]+(?:ms|s))",
+    r"^[✅✗]\s+([\d\.]+):(\d+)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*avg:\s*([0-9\.]+(?:ms|s))",
+    re.IGNORECASE
+)
+
+# 2. Для статистических строк (которые НЕ надо парсить)
+# Примеры: 
+# 14:11:09    📊 1600 | ✅ 0 | ❌ 0
+# ⏱ 12:30:45   Checked: 5000 | Alive: 123
+STATS_REGEX = re.compile(
+    r"(^\d{2}:\d{2}:\d{2}|📊|⏱|Checked:|Total:|Progress:)",
     re.IGNORECASE
 )
 
@@ -59,11 +72,16 @@ def _parse_line_to_db(line: str, conn):
     """
     global _PROXY_CACHE, _LAST_FLUSH
     
+    # Пропускаем статистические строки
+    if STATS_REGEX.search(line):
+        return
+    
+    # Парсим только строки с прокси
     m = PROXY_REGEX.search(line)
     if not m:
-        # DEBUG: показываем что не распарсилось
-        if ":" in line and any(c.isdigit() for c in line):
-            print(f"⚠️ Failed to parse: {line[:100]}")
+        # DEBUG: показываем что не распарсилось (только если это похоже на прокси)
+        if ":" in line and "|" in line and any(c.isdigit() for c in line):
+            print(f"⚠️ Failed to parse proxy line: {line[:100]}")
         return
 
     host = m.group(1)
@@ -73,11 +91,14 @@ def _parse_line_to_db(line: str, conn):
     speed_raw = m.group(5).strip()
     speed_ms = _parse_speed_to_ms(speed_raw)
     
-    print(f"✅ Parsed: {host}:{port} | {geo} | {anonymity} | {speed_ms}ms")
+    # Определяем жив ли прокси (✅ = alive, ✗ = dead)
+    is_alive = line.startswith("✅")
+    
+    print(f"{'✅' if is_alive else '❌'} Parsed: {host}:{port} | {geo} | {anonymity} | {speed_ms}ms")
 
     # Добавляем в кэш
     with _CACHE_LOCK:
-        _PROXY_CACHE.append((host, port, geo, anonymity, speed_ms))
+        _PROXY_CACHE.append((host, port, geo, anonymity, speed_ms, is_alive))
         
         # Сбрасываем в БД раз в 5 секунд ИЛИ при 100 записях
         if len(_PROXY_CACHE) >= 100 or (time.time() - _LAST_FLUSH) > 5:
@@ -99,19 +120,18 @@ def _flush_cache_to_db(conn):
         # Используем batch insert для скорости
         from psycopg2.extras import execute_values
         
-        # ИСПРАВЛЕНО: убрали 'NOW()' из tuple - используем DEFAULT
+        # ИСПРАВЛЕНО: передаем is_alive напрямую
         execute_values(cur, """
             INSERT INTO proxies (host, port, geo, is_alive, anonymity, speed_ms, last_check)
             VALUES %s
             ON CONFLICT (host, port)
             DO UPDATE SET
                 geo = EXCLUDED.geo,
-                is_alive = TRUE,
+                is_alive = EXCLUDED.is_alive,
                 anonymity = EXCLUDED.anonymity,
                 speed_ms = EXCLUDED.speed_ms,
                 last_check = NOW()
-        """, [(h, p, g, True, a, s, None) for h, p, g, a, s in _PROXY_CACHE],
-        template="(%s, %s, %s, %s, %s, %s, COALESCE(%s, NOW()))")
+        """, [(h, p, g, alive, a, s) for h, p, g, a, s, alive in _PROXY_CACHE])
         
         conn.commit()
         count = len(_PROXY_CACHE)
@@ -149,6 +169,7 @@ def _log_reader(proc):
                 print("Process terminated, final flush...")
                 with _CACHE_LOCK:
                     _flush_cache_to_db(_PARSER_CONN)
+                STATUS["last_log"] = "completed"
                 break
             
             try:
@@ -163,20 +184,14 @@ def _log_reader(proc):
                 if not line:
                     continue
 
-                # Обновляем краткий лог (только если это важная строка)
-                # Только если строка начинается с ✅/❌/✗/✓ + IP:PORT
-                if re.match(r'^[✅❌✗✓]\s+\d+\.\d+\.\d+\.\d+:\d+\s*\|', line):
+                # Обновляем краткий лог (только для важных строк с прокси)
+                if re.match(r'^[✅❌✗✓]\s+\d+\.\d+\.\d+\.\d+:\d+', line):
                     STATUS["last_log"] = line[:300]
-                    print(f"[LOG] {line}")
-                elif "terminated" in line or "final flush" in line.lower():
-                    STATUS["last_log"] = "completed successfully"
-                    print(f"[LOG] {line}")
-                elif "process died" not in STATUS["last_log"]:
-                    # Остаёмся на последнем успешном логе, не перезаписываем на "process died" сразу
-                    print(f"⚠️ {line}")	
+                    print(f"[PROXY] {line}")
+                elif "completed" in line.lower() or "finished" in line.lower():
+                    STATUS["last_log"] = line[:300]
+                    print(f"[INFO] {line}")
                     
-                    
-
                 # Парсим (добавляем в кэш)
                 try:
                     _parse_line_to_db(line, _PARSER_CONN)
@@ -223,12 +238,12 @@ def start_proxy_checker():
 
     # Запускаем бинарник
     PROCESS = subprocess.Popen(
-    [PROXY_CHECKER_BIN, "--recheck-db"],
-    stdout=subprocess.PIPE,
-    stderr=subprocess.STDOUT,
-    bufsize=1,
-    universal_newlines=False,  # ← КРИТИЧНО
-    close_fds=True
+        [PROXY_CHECKER_BIN, "--recheck-db"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=1,
+        universal_newlines=False,  # ← КРИТИЧНО
+        close_fds=True
     )
 
     STATUS["running"] = True
@@ -333,7 +348,8 @@ def get_proxy_checker_status():
                 # Процесс мёртв
                 STATUS["running"] = False
                 STATUS["pid"] = None
-                STATUS["last_log"] = "process died"
+                if STATUS["last_log"] != "completed":
+                    STATUS["last_log"] = "process died"
     except Exception:
         pass
 

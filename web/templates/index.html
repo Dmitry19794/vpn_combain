@@ -202,12 +202,13 @@
         <h1>🔐 VPN Brute Dashboard</h1>
         
         <!-- Metrics Bar -->
-        <div id="metrics-live" 
+        <!--<div id="metrics-live" 
              hx-get="/metrics-partial" 
              hx-trigger="load, every 5s" 
              hx-swap="outerHTML" 
              style="margin-bottom: 16px;">
         </div>
+        -->
         
         <!-- Navigation Tabs -->
         <nav>
@@ -256,7 +257,15 @@
                     hx-swap="innerHTML"
                     class="tab-btn"
                     _="on htmx:afterOnLoad remove .active from .tab-btn then add .active to me">
-                🔧 Proxy
+                🌍 Proxy
+            </button>
+
+            <button hx-get="/settings-content" 
+                    hx-target="#main-content" 
+                    hx-swap="innerHTML"
+                    class="tab-btn"
+                    _="on htmx:afterOnLoad remove .active from .tab-btn then add .active to me">
+                🔧 Settings
             </button>
 
             <button hx-get="/errors-content" 

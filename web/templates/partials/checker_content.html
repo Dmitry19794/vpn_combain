@@ -1,0 +1,169 @@
+<!-- web/templates/partials/checker_content.html - БЫСТРАЯ ВЕРСИЯ -->
+
+<div class="card">
+    <h3>🔍 VPN Checker Control</h3>
+    
+    <p style="color:#bbb; font-size:0.9em; margin-bottom:16px;">
+        VPN Checker автоматически запускается когда nmap находит открытые порты.
+    </p>
+    
+    <!-- Управление по GEO -->
+    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap:12px; margin-bottom:20px;">
+        {% for geo in ['US', 'EU', 'ASIA'] %}
+        <div style="border:1px solid #333; border-radius:6px; padding:12px; background:#252525;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <h4 style="margin:0; color:#90caf9;">{{ geo }}</h4>
+                <span id="checker-status-{{ geo }}"
+                      hx-get="/vpn-checker-status/{{ geo }}"
+                      hx-trigger="load, every 3s"
+                      hx-swap="innerHTML">
+                    ...
+                </span>
+            </div>
+            
+            <div style="display:flex; gap:8px; margin-top:10px;">
+                <button class="btn" 
+                        style="flex:1; background:#2e7d32; font-size:0.85em;"
+                        hx-post="/vpn-checker-start/{{ geo }}"
+                        hx-swap="none"
+                        hx-indicator="#loading-{{ geo }}">
+                    ▶ Start
+                </button>
+                
+                <button class="btn" 
+                        style="flex:1; background:#d32f2f; font-size:0.85em;"
+                        hx-post="/vpn-checker-stop/{{ geo }}"
+                        hx-swap="none"
+                        hx-indicator="#loading-{{ geo }}">
+                    ⛔ Stop
+                </button>
+            </div>
+            
+            <div id="loading-{{ geo }}" class="htmx-indicator" style="margin-top:8px; text-align:center; color:#90caf9; font-size:0.8em;">
+                ⏳ Loading...
+            </div>
+            
+            <!-- Статистика -->
+            {% set geo_unchecked = unchecked_stats | selectattr('geo', 'equalto', geo) | list %}
+            {% if geo_unchecked %}
+                {% set stats = geo_unchecked[0] %}
+                <div style="margin-top:10px; padding-top:10px; border-top:1px solid #333; font-size:0.85em;">
+                    <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                        <span style="color:#bbb;">Unchecked:</span>
+                        <span style="color:#ffcc80; font-weight:bold;">{{ stats.unchecked_count }}</span>
+                    </div>
+                    <div style="display:flex; justify-content:space-between;">
+                        <span style="color:#bbb;">Last hour:</span>
+                        <span style="color:#90caf9;">{{ stats.last_hour }}</span>
+                    </div>
+                </div>
+            {% else %}
+                <div style="margin-top:10px; padding-top:10px; border-top:1px solid #333; font-size:0.85em; color:#888;">
+                    All addresses checked
+                </div>
+            {% endif %}
+            
+            <!-- VPN статистика -->
+            {% if geo in vpn_by_geo %}
+                <div style="margin-top:10px; padding-top:10px; border-top:1px solid #333; font-size:0.85em;">
+                    <div style="color:#a5d6a7; font-weight:bold; margin-bottom:4px;">Found VPNs:</div>
+                    {% for vpn in vpn_by_geo[geo] %}
+                        <div style="display:flex; justify-content:space-between; margin-bottom:2px;">
+                            <span style="color:#bbb;">{{ vpn.protocol }}:</span>
+                            <span style="color:#a5d6a7;">{{ vpn.count }}</span>
+                        </div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+<!-- Статистика VPN -->
+<div class="card">
+    <h3>📊 VPN Statistics</h3>
+    
+    <table>
+        <thead>
+            <tr>
+                <th>GEO</th>
+                <th>Protocol</th>
+                <th>Total</th>
+                <th>New</th>
+                <th>Last Hour</th>
+                <th>Last 24h</th>
+            </tr>
+        </thead>
+        <tbody id="vpn-stats-tbody"
+               hx-get="/vpn-checker-stats"
+               hx-trigger="load, every 10s"
+               hx-swap="innerHTML">
+            <tr>
+                <td colspan="6" style="text-align:center; color:#888;">Loading...</td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+<!-- Непроверенные адреса -->
+<div class="card">
+    <h3>⏳ Unchecked Addresses Queue</h3>
+    
+    <table>
+        <thead>
+            <tr>
+                <th>GEO</th>
+                <th>Port</th>
+                <th>Count</th>
+                <th>Oldest</th>
+                <th>Newest</th>
+            </tr>
+        </thead>
+        <tbody id="unchecked-tbody"
+               hx-get="/unchecked-addresses-stats"
+               hx-trigger="load, every 10s"
+               hx-swap="innerHTML">
+            <tr>
+                <td colspan="5" style="text-align:center; color:#888;">Loading...</td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+<!-- Последние VPN -->
+<div class="card">
+    <h3>🌐 Recent VPNs</h3>
+    
+    <table>
+        <thead>
+            <tr>
+                <th>Time</th>
+                <th>IP:Port</th>
+                <th>GEO</th>
+                <th>Protocol</th>
+                <th>Version</th>
+                <th>Status</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody id="recent-vpns-tbody"
+               hx-get="/recent-vpns"
+               hx-trigger="load, every 15s"
+               hx-swap="innerHTML">
+            <tr>
+                <td colspan="7" style="text-align:center; color:#888;">Loading...</td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+<!-- HTMX indicator CSS -->
+<style>
+.htmx-indicator {
+    display: none;
+}
+.htmx-request .htmx-indicator {
+    display: block;
+}
+</style>
