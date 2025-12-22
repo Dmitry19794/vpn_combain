@@ -1,90 +1,281 @@
+<!-- /opt/vpn/web/templates/partials/settings_content.html -->
+
 <div class="card">
-  <h3>➕ Создать группу</h3>
-
-  <form hx-post="/create-cred-group"
-        hx-target="#cred-groups-list"
-        hx-swap="beforeend"
-        style="display:grid; grid-template-columns: 1fr 120px 120px auto; gap:8px; align-items:end;">
-
-    <input type="text" name="name" placeholder="Название" required>
-
-    <select name="geo" required>
-      <option value="US">US</option>
-      <option value="EU">EU</option>
-      <option value="ASIA">ASIA</option>
-    </select>
-
-    <input type="number" name="priority" value="10" min="1" max="100" required>
-
-    <button type="submit" class="btn">Создать</button>
-  </form>
+    <h3>⚙️ Scanner Configuration</h3>
+    
+    <div style="background:#2a2a2a; padding:16px; border-radius:6px; margin-bottom:16px;">
+        <div style="font-size:1em; color:#bbb; margin-bottom:8px;">
+            📋 Current Pipeline: 
+            <strong style="color:#90caf9; font-size:1.1em;">
+                {{ config['scanner_engine']|upper }} → 
+                {% if config['httpx_enabled'] %}HTTPX → {% endif %}
+                {{ config['detection_mode']|upper }} → 
+                BRUTE
+            </strong>
+        </div>
+    </div>
+    
+    <!-- Индикатор сохранения -->
+    <div id="save-indicator" style="display:none; padding:12px; border-radius:6px; margin-bottom:16px; text-align:center; font-weight:bold;">
+    </div>
+    
+    <!-- Детальная информация -->
+    <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:12px; margin-bottom:16px;">
+        <div style="background:#2a2a2a; padding:12px; border-radius:4px; text-align:center;">
+            <div style="font-size:0.75em; color:#888; margin-bottom:4px;">Scanner</div>
+            <div style="color:#90caf9; font-weight:bold; font-size:1.1em;">{{ config['scanner_engine']|upper }}</div>
+        </div>
+        <div style="background:#2a2a2a; padding:12px; border-radius:4px; text-align:center;">
+            <div style="font-size:0.75em; color:#888; margin-bottom:4px;">Detection</div>
+            <div style="color:#90caf9; font-weight:bold; font-size:1.1em;">{{ config['detection_mode']|upper }}</div>
+        </div>
+        <div style="background:#2a2a2a; padding:12px; border-radius:4px; text-align:center;">
+            <div style="font-size:0.75em; color:#888; margin-bottom:4px;">Httpx</div>
+            <div style="color:#90caf9; font-weight:bold; font-size:1.1em;">
+                {% if config['httpx_enabled'] %}ON{% else %}OFF{% endif %}
+            </div>
+        </div>
+    </div>
 </div>
 
 <div class="card">
-  <h3>📤 Загрузка логинов и паролей</h3>
-
-  <!-- ✅ ЛОГИНЫ -->
-  <form hx-post="/upload-creds-simple" hx-encoding="multipart/form-data"
-        hx-target="#login-upload-result" hx-swap="innerHTML"
-        style="margin-bottom:12px;">
-
-    <input type="hidden" name="cred_type" value="login">
-
-    <input type="file" name="file" required>
-
-    <select name="group_id" required>
-      {% for g in cred_groups %}
-        <option value="{{ g.id }}">{{ g.name }}</option>
-      {% endfor %}
-    </select>
-
-    <button class="btn">📥 Загрузить логины</button>
-  </form>
-
-  <div id="login-upload-result"></div>
-
-  <!-- ✅ ПАРОЛИ -->
-  <form hx-post="/upload-creds-simple" hx-encoding="multipart/form-data"
-        hx-target="#password-upload-result" hx-swap="innerHTML">
-
-    <input type="hidden" name="cred_type" value="password">
-
-    <input type="file" name="file" required>
-
-    <select name="group_id" required>
-      {% for g in cred_groups %}
-        <option value="{{ g.id }}">{{ g.name }}</option>
-      {% endfor %}
-    </select>
-
-    <button class="btn">🔑 Загрузить пароли</button>
-  </form>
-
-  <div id="password-upload-result"></div>
+    <h3>🔍 Port Scanner</h3>
+    
+    <div style="margin-bottom:20px;">
+        <label style="display:block; margin-bottom:12px; color:#bbb; font-size:0.95em;">
+            Scanner Engine
+        </label>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+            <label style="display:block; background:#2a2a2a; border:2px solid {% if config['scanner_engine'] == 'masscan' %}#90caf9{% else %}#444{% endif %}; padding:16px; border-radius:6px; cursor:pointer;">
+                <input type="radio" name="scanner" value="masscan" {% if config['scanner_engine'] == 'masscan' %}checked{% endif %} style="margin-right:8px;">
+                <strong style="color:#90caf9;">Masscan</strong>
+                <span style="display:inline-block; background:#2e7d32; color:white; padding:2px 6px; border-radius:3px; font-size:0.75em; margin-left:6px;">FASTEST</span>
+                <div style="font-size:0.85em; color:#888; margin-top:6px;">
+                    ⚡ 10M packets/sec<br>
+                    ⚠️ Requires root
+                </div>
+            </label>
+            
+            <label style="display:block; background:#2a2a2a; border:2px solid {% if config['scanner_engine'] == 'naabu' %}#90caf9{% else %}#444{% endif %}; padding:16px; border-radius:6px; cursor:pointer;">
+                <input type="radio" name="scanner" value="naabu" {% if config['scanner_engine'] == 'naabu' %}checked{% endif %} style="margin-right:8px;">
+                <strong style="color:#90caf9;">Naabu</strong>
+                <span style="display:inline-block; background:#f57c00; color:white; padding:2px 6px; border-radius:3px; font-size:0.75em; margin-left:6px;">ACCURATE</span>
+                <div style="font-size:0.85em; color:#888; margin-top:6px;">
+                    🎯 Better accuracy<br>
+                    ✅ No root needed
+                </div>
+            </label>
+        </div>
+    </div>
+    
+    <div style="margin-bottom:20px;">
+        <label style="display:block; margin-bottom:8px; color:#bbb; font-size:0.95em;">
+            Scan Rate: <span id="rate-value">{{ config['scan_rate'] }}</span> packets/sec
+        </label>
+        <input type="range" id="scan-rate" min="1000" max="100000" step="1000" value="{{ config['scan_rate'] }}"
+               style="width:100%; height:6px; background:#444; border-radius:3px; outline:none; -webkit-appearance:none;"
+               oninput="document.getElementById('rate-value').textContent=this.value">
+    </div>
+    
+    <div style="margin-bottom:20px;">
+        <label style="display:block; margin-bottom:8px; color:#bbb; font-size:0.95em;">
+            Workers: <span id="workers-value">{{ config['workers'] }}</span>
+        </label>
+        <input type="range" id="workers" min="8" max="256" step="8" value="{{ config['workers'] }}"
+               style="width:100%; height:6px; background:#444; border-radius:3px; outline:none; -webkit-appearance:none;"
+               oninput="document.getElementById('workers-value').textContent=this.value">
+    </div>
 </div>
 
 <div class="card">
-  <h3>📋 Группы</h3>
-
-  <table>
-    <thead>
-      <tr>
-        <th>ID</th>
-        <th>Имя</th>
-        <th>GEO</th>
-        <th>Приоритет</th>
-      </tr>
-    </thead>
-
-    <tbody id="cred-groups-list">
-      {% for g in cred_groups %}
-      <tr>
-        <td>{{ g.id }}</td>
-        <td>{{ g.name }}</td>
-        <td>{{ g.geo }}</td>
-        <td>{{ g.priority }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+    <h3>🌐 HTTP Fingerprinting</h3>
+    
+    <label style="display:flex; align-items:center; justify-content:space-between; margin-bottom:20px;">
+        <span style="color:#bbb; font-size:0.95em;">Enable Httpx Pre-filtering</span>
+        <input type="checkbox" id="httpx-enabled" {% if config['httpx_enabled'] %}checked{% endif %}>
+    </label>
+    
+    <div style="font-size:0.85em; color:#888; padding:12px; background:rgba(144,202,249,0.1); border-left:4px solid #90caf9; border-radius:4px;">
+        Run httpx before VPN detection to filter HTTP services (recommended)
+    </div>
 </div>
+
+<div class="card">
+    <h3>🎯 VPN Detection Strategy</h3>
+    
+    <div style="margin-bottom:20px;">
+        <label style="display:block; margin-bottom:8px; color:#bbb; font-size:0.95em;">
+            Detection Mode
+        </label>
+        <select id="detection-mode" style="width:100%; background:#2a2a2a; border:1px solid #444; color:#e0e0e0; padding:10px; border-radius:4px; font-size:0.95em;">
+            <option value="nuclei-only" {% if config['detection_mode'] == 'nuclei-only' %}selected{% endif %}>
+                Nuclei Only (Fast, template-based)
+            </option>
+            <option value="checker-only" {% if config['detection_mode'] == 'checker-only' %}selected{% endif %}>
+                Custom Checker Only (Deep analysis)
+            </option>
+            <option value="nuclei-then-checker" {% if config['detection_mode'] == 'nuclei-then-checker' %}selected{% endif %}>
+                Nuclei → Checker (Recommended)
+            </option>
+            <option value="parallel" {% if config['detection_mode'] == 'parallel' %}selected{% endif %}>
+                Parallel (Both simultaneously)
+            </option>
+        </select>
+        
+        <div style="margin-top:12px; padding:12px; background:rgba(144,202,249,0.1); border-left:4px solid #90caf9; border-radius:4px; font-size:0.85em; color:#bbb; line-height:1.5;">
+            <strong>💡 Recommended:</strong> Nuclei first (fast detection), then custom checker for verification
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <h3>🔍 Tools Status</h3>
+    
+    <table>
+        <thead>
+            <tr>
+                <th>Tool</th>
+                <th>Status</th>
+                <th>Path</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><strong>Masscan</strong></td>
+                <td>
+                    {% if tools_status['masscan'] %}
+                        <span style="color:#4caf50;">✅ Installed</span>
+                    {% else %}
+                        <span style="color:#f44336;">❌ Not Found</span>
+                    {% endif %}
+                </td>
+                <td style="font-family:monospace; font-size:0.85em; color:#888;">/usr/bin/masscan</td>
+            </tr>
+            <tr>
+                <td><strong>Naabu</strong></td>
+                <td>
+                    {% if tools_status['naabu'] %}
+                        <span style="color:#4caf50;">✅ Installed</span>
+                    {% else %}
+                        <span style="color:#f44336;">❌ Not Found</span>
+                    {% endif %}
+                </td>
+                <td style="font-family:monospace; font-size:0.85em; color:#888;">/opt/vpn/bin/naabu</td>
+            </tr>
+            <tr>
+                <td><strong>Httpx</strong></td>
+                <td>
+                    {% if tools_status['httpx'] %}
+                        <span style="color:#4caf50;">✅ Installed</span>
+                    {% else %}
+                        <span style="color:#f44336;">❌ Not Found</span>
+                    {% endif %}
+                </td>
+                <td style="font-family:monospace; font-size:0.85em; color:#888;">/opt/vpn/bin/httpx</td>
+            </tr>
+            <tr>
+                <td><strong>Nuclei</strong></td>
+                <td>
+                    {% if tools_status['nuclei'] %}
+                        <span style="color:#4caf50;">✅ Installed</span>
+                    {% else %}
+                        <span style="color:#f44336;">❌ Not Found</span>
+                    {% endif %}
+                </td>
+                <td style="font-family:monospace; font-size:0.85em; color:#888;">/opt/vpn/bin/nuclei</td>
+            </tr>
+        </tbody>
+    </table>
+    
+    <div style="margin-top:16px; padding:12px; background:#2a2a2a; border-radius:4px; font-size:0.85em; color:#bbb;">
+        💡 To install missing tools: <code style="background:#1a1a1a; padding:2px 6px; border-radius:3px; color:#90caf9;">sudo ./install_tools.sh</code>
+    </div>
+</div>
+
+<div style="display:flex; gap:12px; margin-top:20px;">
+    <button class="btn" style="flex:1; background:#2e7d32; font-size:1em; padding:14px;" onclick="saveSettings()">
+        💾 Save Configuration
+    </button>
+    
+    <button class="btn" style="flex:0.3; background:#d32f2f; font-size:1em; padding:14px;"
+            onclick="if(confirm('Reset all settings?')) { alert('Settings reset! Reload page.'); }">
+        🔄 Reset
+    </button>
+</div>
+
+<script>
+function saveSettings() {
+    const config = {
+        scanner: {
+            engine: document.querySelector('input[name="scanner"]:checked').value,
+            rate: parseInt(document.getElementById('scan-rate').value),
+            workers: parseInt(document.getElementById('workers').value)
+        },
+        httpx: {
+            enabled: document.getElementById('httpx-enabled').checked
+        },
+        detection: {
+            mode: document.getElementById('detection-mode').value
+        }
+    };
+    
+    console.log('Saving config:', config);
+    
+    // Показываем индикатор загрузки
+    const indicator = document.getElementById('save-indicator');
+    indicator.style.display = 'block';
+    indicator.style.background = '#1976d2';
+    indicator.style.color = 'white';
+    indicator.textContent = '⏳ Saving...';
+    
+    fetch('/api/settings/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config)
+    })
+    .then(response => response.json())
+    .then(data => {
+        console.log('Save response:', data);
+        
+        // Показываем успех
+        indicator.style.background = '#2e7d32';
+        indicator.textContent = '✅ Settings saved successfully!';
+        
+        // Перезагружаем страницу через 1 секунду
+        setTimeout(() => {
+            location.reload();
+        }, 1000);
+    })
+    .catch(error => {
+        console.error('Save error:', error);
+        
+        // Показываем ошибку
+        indicator.style.background = '#d32f2f';
+        indicator.textContent = '❌ Failed to save: ' + error;
+        
+        // Скрываем через 3 секунды
+        setTimeout(() => {
+            indicator.style.display = 'none';
+        }, 3000);
+    });
+}
+</script>
+
+<style>
+input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 18px;
+    height: 18px;
+    background: #90caf9;
+    border-radius: 50%;
+    cursor: pointer;
+}
+input[type="range"]::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    background: #90caf9;
+    border-radius: 50%;
+    cursor: pointer;
+    border: none;
+}
+</style>

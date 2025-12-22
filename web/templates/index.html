@@ -1,288 +1,246 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>🔐 VPN Brute Dashboard</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VPN Scanner</title>
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
     <script src="https://unpkg.com/hyperscript.org@0.9.12"></script>
     <style>
-        :root {
-            --bg: #121212;
-            --card-bg: #1e1e1e;
-            --text: #e0e0e0;
-            --border: #333;
-            --queued: #1976d2;
-            --running: #d32f2f;
-            --completed: #2e7d32;
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1a1a1a;
+            color: #e0e0e0;
+            font-size: 14px; /* Уменьшенный базовый шрифт */
         }
-        
-        body { 
-            background: var(--bg); 
-            color: var(--text); 
-            font-family: 'Segoe UI', sans-serif; 
-            margin: 15px; 
-            font-size: 12px;
-        }
-        
-        .container { 
-            max-width: 1400px; 
-            margin: 0 auto; 
-        }
-        
-        .card { 
-            background: var(--card-bg); 
-            border: 1px solid var(--border); 
-            border-radius: 6px; 
-            padding: 16px; 
-            margin: 12px 0; 
-        }
-        
-        h1 { 
-            margin: 0 0 15px; 
-            font-weight: 600; 
-        }
-        
-        h3 { 
-            margin: 0 0 12px; 
-            font-weight: 500; 
-            border-bottom: 1px solid var(--border); 
-            padding-bottom: 6px; 
-        }
-        
-        /* Таблицы */
-        table { 
-            width: 100%; 
-            border-collapse: collapse; 
-            font-size: 0.85em; 
-        }
-        
-        th, td { 
-            padding: 8px; 
-            text-align: left; 
-            border-bottom: 1px solid #2a2a2a; 
-        }
-        
-        th {
-            background: #2a2a2a;
-            font-weight: 600;
-        }
-        
-        tr:hover {
+        .header {
             background: #252525;
+            border-bottom: 1px solid #333;
+            padding: 16px 24px;
         }
-        
-        /* Кнопки */
-        .btn { 
-            background: #1976d2; 
-            color: white; 
-            border: none; 
-            padding: 6px 12px; 
-            border-radius: 4px; 
+        .header h1 {
+            color: #90caf9;
+            font-size: 1.3em; /* Уменьшен заголовок */
+            margin-bottom: 12px;
+        }
+        .tabs {
+            display: flex;
+            gap: 4px;
+            overflow-x: auto;
+            white-space: nowrap;
+        }
+        .tab-btn {
+            background: transparent;
+            border: none;
+            color: #bbb;
+            padding: 8px 16px; /* Уменьшен padding */
             cursor: pointer;
-            font-size: 0.9em;
+            border-radius: 4px 4px 0 0;
+            font-size: 0.85em; /* Уменьшен шрифт вкладок */
             transition: all 0.2s;
-            font-family: 'Segoe UI', sans-serif;
+            border-bottom: 2px solid transparent;
         }
-        
-        .btn:hover { 
-            opacity: 0.85;
-            transform: translateY(-1px);
-        }
-        
-        .btn:active {
-            transform: translateY(0);
-        }
-        
-        /* Статусы */
-        .running { 
-            background: #3c1a1a; 
-            color: #ffcdd2; 
-        }
-        
-        .completed { 
-            background: #1b3a1f; 
-            color: #a5d6a7; 
-        }
-        
-        .pending { 
-            background: #333; 
-            color: #bbb; 
-        }
-        
-        .queued {
-            background: #1a3a5c;
+        .tab-btn:hover {
+            background: #2a2a2a;
             color: #90caf9;
         }
-        
-        .paused {
-            background: #5c3a1a;
-            color: #ffcc80;
+        .tab-btn.active {
+            background: #1a1a1a;
+            color: #90caf9;
+            border-bottom: 2px solid #90caf9;
         }
-        
-        .failed {
-            background: #5d2121;
-            color: #ffcdd2;
+        .main-content {
+            padding: 24px;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding-bottom: 60px;
         }
-        
-        /* Прогресс-бар */
-        .progress-bar {
-            background: #333;
-            border-radius: 3px;
-            height: 20px;
-            position: relative;
-            overflow: hidden;
-            min-width: 80px;
+        .card {
+            background: #252525;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
         }
-        
-        .progress-bar-fill {
-            background: linear-gradient(90deg, #2e7d32, #4caf50);
-            height: 100%;
-            transition: width 0.3s ease;
+        .card h3 {
+            color: #90caf9;
+            margin-bottom: 12px;
+            font-size: 1.05em; /* Уменьшен заголовок карточки */
         }
-        
-        .progress-bar-text {
-            position: absolute;
-            left: 50%;
-            top: 50%;
-            transform: translate(-50%, -50%);
-            font-size: 0.75em;
-            font-weight: bold;
-            color: #fff;
-            text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+        .btn {
+            background: #1976d2;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.95em;
+            transition: background 0.2s;
         }
-        
-        /* Навигация */
-        nav { 
-            margin-bottom: 16px; 
-            display: flex; 
-            flex-wrap: wrap; 
-            gap: 4px; 
+        .btn:hover {
+            background: #1565c0;
         }
-        
-        .tab-btn { 
-            background: #333; 
-            color: #ccc; 
-            border: 1px solid #555; 
-            padding: 8px 16px; 
-            cursor: pointer; 
-            border-radius: 4px 4px 0 0;
-            transition: all 0.2s;
+        .btn:active {
+            background: #0d47a1;
         }
-        
-        .tab-btn:hover { 
-            background: #444; 
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 16px;
         }
-        
-        .tab-btn.active { 
-            background: var(--card-bg); 
-            color: var(--text); 
-            border-bottom: 1px solid var(--card-bg); 
+        th, td {
+            padding: 10px; /* Уменьшен padding в таблицах */
+            text-align: left;
+            border-bottom: 1px solid #333;
+            font-size: 0.9em; /* Уменьшен шрифт таблиц */
         }
-        
-        /* Формы */
+        th {
+            background: #2a2a2a;
+            color: #90caf9;
+            font-weight: 600;
+        }
+        tr:hover {
+            background: #2a2a2a;
+        }
         input[type="text"],
-        input[type="number"],
         input[type="file"],
         select {
-            padding: 6px;
-            border: 1px solid #333;
-            background: #1e1e1e;
+            background: #2a2a2a;
+            border: 1px solid #444;
             color: #e0e0e0;
+            padding: 10px;
             border-radius: 4px;
+            width: 100%;
+            margin-bottom: 12px;
         }
+        input[type="text"]:focus,
+        select:focus {
+            outline: none;
+            border-color: #90caf9;
+        }
+        .status-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        .status-online { background: #4caf50; }
+        .status-offline { background: #f44336; }
+        .status-pending { background: #ff9800; }
         
-        label {
-            font-size: 0.9em;
-            color: #bbb;
+        .status-bar {
+            display: flex;
+            gap: 24px;
+            align-items: center;
+            padding: 12px 24px;
+            background: #2a2a2a;
+            border-top: 1px solid #333;
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            font-size: 0.85em;
+            z-index: 1000;
+        }
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>🔐 VPN Brute Dashboard</h1>
-        
-        <!-- Metrics Bar -->
-        <!--<div id="metrics-live" 
-             hx-get="/metrics-partial" 
-             hx-trigger="load, every 5s" 
-             hx-swap="outerHTML" 
-             style="margin-bottom: 16px;">
-        </div>
-        -->
-        
-        <!-- Navigation Tabs -->
-        <nav>
-            <button hx-get="/panel-content" 
-                    hx-target="#main-content" 
-                    hx-swap="innerHTML"
-                    class="tab-btn active"
-                    _="on htmx:afterOnLoad remove .active from .tab-btn then add .active to me">
-                📊 Panel
+    <div class="header">
+        <h1>🔐 VPN Scanner</h1>
+        <div class="tabs">
+            <button class="tab-btn active" 
+                    hx-get="/panel-content" 
+                    hx-target="#main-content"
+                    _="on click remove .active from .tab-btn then add .active to me">
+                📊 Dashboard
             </button>
-
-            <button hx-get="/checker-content" 
-                    hx-target="#main-content" 
-                    hx-swap="innerHTML"
-                    class="tab-btn"
-                    _="on htmx:afterOnLoad remove .active from .tab-btn then add .active to me">
-                🔍 Checker
+            
+            <button class="tab-btn" 
+                    hx-get="/masscan-content" 
+                    hx-target="#main-content"
+                    _="on click remove .active from .tab-btn then add .active to me">
+                🔍 Masscan
             </button>
-
-            <button hx-get="/credentials-content" 
-                    hx-target="#main-content" 
-                    hx-swap="innerHTML"
-                    class="tab-btn"
-                    _="on htmx:afterOnLoad remove .active from .tab-btn then add .active to me">
+            
+            <button class="tab-btn" 
+                    hx-get="/checker-content" 
+                    hx-target="#main-content"
+                    _="on click remove .active from .tab-btn then add .active to me">
+                🎯 VPN Checker
+            </button>
+            
+            <button class="tab-btn" 
+                    hx-get="/proxy-content" 
+                    hx-target="#main-content"
+                    _="on click remove .active from .tab-btn then add .active to me">
+                🌐 Proxies
+            </button>
+            
+            <button class="tab-btn" 
+                    hx-get="/vpns-content" 
+                    hx-target="#main-content"
+                    _="on click remove .active from .tab-btn then add .active to me">
+                🔐 VPNs
+            </button>
+            
+            <button class="tab-btn" 
+                    hx-get="/credentials-content" 
+                    hx-target="#main-content"
+                    _="on click remove .active from .tab-btn then add .active to me">
                 🔑 Credentials
             </button>
-
-            <button hx-get="/vpns-content" 
-                    hx-target="#main-content" 
-                    hx-swap="innerHTML"
-                    class="tab-btn"
-                    _="on htmx:afterOnLoad remove .active from .tab-btn then add .active to me">
-                🌐 VPNs
+            
+            <button class="tab-btn" 
+                    hx-get="/settings-content" 
+                    hx-target="#main-content"
+                    _="on click remove .active from .tab-btn then add .active to me">
+                ⚙️ Settings
             </button>
-
-            <button hx-get="/masscan-content" 
-                    hx-target="#main-content" 
-                    hx-swap="innerHTML"
-                    class="tab-btn"
-                    _="on htmx:afterOnLoad remove .active from .tab-btn then add .active to me">
-                📡 Masscan
+            
+            <button class="tab-btn" 
+                    hx-get="/errors-content" 
+                    hx-target="#main-content"
+                    _="on click remove .active from .tab-btn then add .active to me">
+                ⚠️ Errors
             </button>
+        </div>
+    </div>
 
-            <button hx-get="/proxy-content" 
-                    hx-target="#main-content" 
-                    hx-swap="innerHTML"
-                    class="tab-btn"
-                    _="on htmx:afterOnLoad remove .active from .tab-btn then add .active to me">
-                🌍 Proxy
-            </button>
+    <div class="main-content" id="main-content">
+        {{ initial_content|safe }}
+    </div>
 
-            <button hx-get="/settings-content" 
-                    hx-target="#main-content" 
-                    hx-swap="innerHTML"
-                    class="tab-btn"
-                    _="on htmx:afterOnLoad remove .active from .tab-btn then add .active to me">
-                🔧 Settings
-            </button>
-
-            <button hx-get="/errors-content" 
-                    hx-target="#main-content" 
-                    hx-swap="innerHTML"
-                    class="tab-btn"
-                    _="on htmx:afterOnLoad remove .active from .tab-btn then add .active to me">
-                🚨 Errors
-            </button>
-        </nav>
-
-        <!-- Main Content Area -->
-        <div id="main-content" 
-             hx-get="/panel-content" 
-             hx-trigger="load" 
+    <div class="status-bar">
+        <div class="status-item">
+            <span class="status-indicator status-online"></span>
+            <span>Web: Online</span>
+        </div>
+        
+        <div class="status-item" 
+             hx-get="/celery-status" 
+             hx-trigger="load, every 10s"
              hx-swap="innerHTML">
-            Loading...
+            <span class="status-indicator status-pending"></span>
+            <span>Celery: Checking...</span>
+        </div>
+        
+        <div class="status-item" 
+             hx-get="/proxy-checker-status" 
+             hx-trigger="load, every 5s"
+             hx-swap="innerHTML">
+            <span class="status-indicator status-pending"></span>
+            <span>Proxy Checker: Checking...</span>
+        </div>
+        
+        <div style="margin-left: auto; color: #888;">
+            PostgreSQL: Port 5434
         </div>
     </div>
 </body>

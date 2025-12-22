@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 # vpn/web/main.py
 import sys
+
+sys.path.insert(0, '/opt/vpn')
+
 import os
 
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -28,6 +31,7 @@ from datetime import datetime
 from typing import List
 from web.db import get_db, db_pool
 from functools import lru_cache
+from web.settings_api import router as settings_router
 
 from web.proxy_checker_manager import (
     start_proxy_checker,
@@ -36,6 +40,13 @@ from web.proxy_checker_manager import (
     resume_proxy_checker,
     get_proxy_checker_status
 )
+
+try:
+    from config import config
+    CONFIG_AVAILABLE = True
+except ImportError:
+    print("⚠️ config.py not found, using defaults")
+    CONFIG_AVAILABLE = False
 
 # КЭШ для /proxy-table
 _PROXY_TABLE_CACHE = {"data": "", "timestamp": 0}
@@ -65,6 +76,8 @@ except Exception as e:
     CELERY_AVAILABLE = False
 
 app = FastAPI()
+
+app.include_router(settings_router)
 
 from pathlib import Path
 BASE_DIR = Path(__file__).parent
@@ -188,6 +201,169 @@ def get_celery_worker_status():
     except Exception as e:
         print("get_celery_worker_status error:", e)
         return {"online": False, "pids": []}
+
+@app.get("/settings-content", response_class=HTMLResponse)
+async def settings_content(request: Request):
+    """Страница настроек"""
+    
+    config_file = '/opt/vpn/config.json'
+    
+    # Загружаем конфиг
+    if os.path.exists(config_file):
+        try:
+            import json
+            with open(config_file, 'r') as f:
+                cfg = json.load(f)
+            
+            print(f"📖 Loaded config: {cfg}")
+            
+            current_config = {
+                'scanner_engine': cfg.get('scanner', {}).get('engine', 'masscan'),
+                'scan_rate': cfg.get('scanner', {}).get('rate', 10000),
+                'workers': cfg.get('scanner', {}).get('workers', 64),
+                'httpx_enabled': cfg.get('httpx', {}).get('enabled', True),
+                'detection_mode': cfg.get('detection', {}).get('mode', 'checker-only'),
+            }
+        except Exception as e:
+            print(f"⚠️ Config load error: {e}")
+            current_config = {
+                'scanner_engine': 'masscan',
+                'scan_rate': 10000,
+                'workers': 64,
+                'httpx_enabled': True,
+                'detection_mode': 'checker-only'
+            }
+    else:
+        print(f"⚠️ Config file not found: {config_file}")
+        current_config = {
+            'scanner_engine': 'masscan',
+            'scan_rate': 10000,
+            'workers': 64,
+            'httpx_enabled': True,
+            'detection_mode': 'checker-only'
+        }
+    
+    # Проверяем инструменты
+    tools_status = {
+        'masscan': os.path.exists('/usr/bin/masscan'),
+        'naabu': os.path.exists('/opt/vpn/bin/naabu'),
+        'httpx': os.path.exists('/opt/vpn/bin/httpx'),
+        'nuclei': os.path.exists('/opt/vpn/bin/nuclei'),
+    }
+    
+    print(f"📋 Current config for UI: {current_config}")
+    print(f"🔧 Tools status: {tools_status}")
+    
+    return templates.TemplateResponse("partials/settings_content.html", {
+        "request": request,
+        "config": current_config,
+        "tools_status": tools_status
+    })
+
+@app.post("/api/settings/save")
+async def save_settings(request: Request):
+    """Сохранить настройки"""
+    try:
+        # Читаем RAW body
+        body_bytes = await request.body()
+        body_str = body_bytes.decode('utf-8')
+        data = json.loads(body_str)
+        
+        print(f"\n{'='*60}")
+        print(f"📝 SAVING SETTINGS")
+        print(f"Body: {body_str}")
+        print(f"Data: {data}")
+        
+        config_file = '/opt/vpn/config.json'
+        
+        # Загружаем
+        with open(config_file, 'r') as f:
+            config = json.load(f)
+        
+        print(f"Current: {config['scanner']}")
+        
+        # Обновляем
+        if 'scanner' in data:
+            config['scanner']['engine'] = data['scanner']['engine']
+            config['scanner']['rate'] = data['scanner']['rate']
+            config['scanner']['workers'] = data['scanner']['workers']
+        
+        if 'httpx' in data:
+            config['httpx']['enabled'] = data['httpx']['enabled']
+        
+        if 'detection' in data:
+            config['detection']['mode'] = data['detection']['mode']
+        
+        print(f"New: {config['scanner']}")
+        
+        # Сохраняем
+        with open(config_file, 'w') as f:
+            json.dump(config, f, indent=2)
+        
+        print(f"✅ SAVED!")
+        print(f"{'='*60}\n")
+        
+        return JSONResponse({
+            "status": "success",
+            "message": "Settings saved!",
+            "config": config
+        })
+        
+    except Exception as e:
+        print(f"❌ ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)}
+        )
+
+@app.post("/api/settings/reset")
+async def reset_settings():
+    """Сбросить настройки к дефолтным"""
+    try:
+        config_file = '/opt/vpn/config.json'
+        
+        # Дефолтный конфиг
+        default_config = {
+            "scanner": {
+                "engine": "masscan",
+                "rate": 10000,
+                "workers": 64,
+                "timeout": 5,
+                "retries": 2
+            },
+            "httpx": {
+                "enabled": True,
+                "timeout": 10,
+                "threads": 50
+            },
+            "detection": {
+                "mode": "checker-only",
+                "timeout": 15
+            },
+            "brute": {
+                "enabled": True,
+                "timeout": 30,
+                "max_attempts": 3
+            },
+            "paths": {
+                "bin_dir": "/opt/vpn/bin"
+            }
+        }
+        
+        # Сохраняем
+        import json
+        with open(config_file, 'w') as f:
+            json.dump(default_config, f, indent=2)
+        
+        print(f"✅ Settings reset to defaults")
+        
+        return {"status": "success", "message": "Settings reset"}
+        
+    except Exception as e:
+        print(f"❌ Reset settings error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # =============        ===================
 @app.get("/", response_class=HTMLResponse)
@@ -968,7 +1144,6 @@ def read_proxy_output():
         save_proxy_parsed(parsed)
 
 # ========== НОВЫЕ ЭНДПОИНТЫ ДЛЯ PROXY CHECKER ==========
-
 @app.get("/scan-jobs-table", response_class=HTMLResponse)
 async def scan_jobs_table():
     db = get_db()
@@ -1025,7 +1200,7 @@ async def scan_jobs_table():
     except Exception as e:
         print(f"ERROR: {e}")
         import traceback
-        traceback.print_exc()        
+        traceback.print_exc()
         return f"<tr><td colspan='8'>Error: {e}</td></tr>"
     finally:
         db_pool.putconn(db)
@@ -1555,6 +1730,56 @@ async def checker_content(request: Request):
     })
 
 # ========== ОСТАЛЬНЫЕ ENDPOINTS ==========
+@app.post("/manual-start-pending")
+async def manual_start_pending():
+    """Ручной запуск pending задач"""
+    if not CELERY_AVAILABLE:
+        return {"error": "Celery not available"}
+    
+    try:
+        from tasks import start_all_pending
+        result = start_all_pending.delay()
+        
+        print(f"✅ Manual start triggered: {result.id}")
+        
+        return {
+            "status": "success",
+            "message": "Starting pending jobs...",
+            "task_id": result.id
+        }
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        return {"error": str(e)}
+
+@app.post("/api/force-start-pending")
+async def force_start_pending(geo: str = Form(default="US")):
+    """Принудительный запуск pending задач"""
+    
+    if not CELERY_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Celery not available")
+    
+    try:
+        print(f"\n{'='*60}")
+        print(f"🚀 FORCE START PENDING SCANS FOR GEO={geo}")
+        print(f"{'='*60}\n")
+        
+        # Вызываем задачу напрямую
+        from tasks import process_pending_scans
+        result = process_pending_scans.delay(geo, 10)
+        
+        print(f"✅ Task queued: {result.id}")
+        
+        return {
+            "status": "success",
+            "message": f"Started processing pending scans for {geo}",
+            "task_id": result.id
+        }
+        
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/scan-jobs-status", response_class=HTMLResponse)
 async def scan_jobs_status():
@@ -1946,16 +2171,88 @@ async def upload_addresses(
 
 @app.post("/start-masscan")
 async def start_masscan(geo: str = Form(default="US")):
+    """Запуск сканирования с выбранным движком из конфига"""
+    
     if not CELERY_AVAILABLE:
         raise HTTPException(status_code=503, detail="Celery not available")
+    
     if not is_valid_geo(geo):
         raise HTTPException(status_code=400, detail=f"Неверная гео: {geo}")
-    task = process_pending_scans.delay(geo=geo, limit=10)
+    
+    # Импортируем НОВУЮ задачу
+    from tasks import scan_with_engine
+    
+    # Запускаем с новым movement
+    task = scan_with_engine.delay(geo=geo, limit=10)
+    
     return {
         "status": "success",
         "message": f"Запущена обработка pending задач для GEO: {geo}",
         "celery_task_id": task.id
     }
+
+'''@app.task(name='tasks.process_pending_scans')
+def process_pending_scans(geo: str = 'US', limit: int = 10):
+    """Обработка pending задач с НОВЫМ движком"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        cur.execute("""
+            SELECT j.id, s.cidr, p.port, s.geo
+            FROM scan_jobs j
+            JOIN scan_subnets s ON j.subnet_id = s.id
+            JOIN scan_ports p ON j.port_id = p.id
+            WHERE j.status = 'pending' AND s.geo = %s
+            ORDER BY j.created_at ASC
+            LIMIT %s
+            FOR UPDATE SKIP LOCKED
+        """, (geo, limit))
+        
+        if cur.rowcount == 0:
+            conn.commit()
+            conn.close()
+            return {'status': 'no_pending', 'geo': geo}
+            
+        jobs = cur.fetchall()
+        
+        if not jobs:
+            conn.commit()
+            conn.close()
+            return {'status': 'no_pending', 'geo': geo}
+
+        launched = []
+        for job in jobs:
+            jid = str(job[0])
+            cidr = job[1]
+            p = job[2]
+            g = job[3]
+            
+            cur.execute("UPDATE scan_jobs SET status='queued' WHERE id=%s", (jid,))
+            launched.append(jid)
+            
+            # ВАЖНО: используем НОВУЮ задачу
+            scan_with_engine.delay(jid, cidr, p, g)
+
+        conn.commit()
+        conn.close()
+        
+        return {
+            'status': 'launched', 
+            'count': len(launched),
+            'geo': geo
+        }
+        
+    except Exception as e:
+        print(f"❌ process_pending_scans error: {e}")
+        if conn:
+            try:
+                conn.rollback()
+                conn.close()
+            except:
+                pass
+        return {'status': 'error', 'error': str(e)}'''
 
 @app.get("/scan-process-status", response_class=HTMLResponse)
 async def scan_process_status(request: Request):

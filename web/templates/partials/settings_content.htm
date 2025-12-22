@@ -1,0 +1,373 @@
+<!-- web/templates/partials/settings_content.html -->
+
+<div class="card">
+    <h3>⚙️ Scanner Configuration</h3>
+    
+    <!-- Current Pipeline Visualization -->
+    <div id="pipeline-visual" 
+         hx-get="/api/settings/pipeline-preview" 
+         hx-trigger="load, every 5s"
+         hx-swap="innerHTML">
+        <div style="text-align:center; color:#888; padding:20px;">Loading pipeline...</div>
+    </div>
+</div>
+
+<div class="card">
+    <h3>🔍 Port Scanner</h3>
+    
+    <div style="margin-bottom:20px;">
+        <label style="display:block; margin-bottom:8px; color:#bbb; font-size:0.95em;">
+            Scanner Engine
+        </label>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+            <div class="radio-card" id="scanner-masscan">
+                <input type="radio" name="scanner" value="masscan" checked>
+                <div class="radio-content">
+                    <div class="radio-title">Masscan</div>
+                    <div class="radio-badge">FASTEST</div>
+                    <div class="radio-desc">
+                        ⚡ 10M packets/sec<br>
+                        ⚠️ Requires root
+                    </div>
+                </div>
+            </div>
+            
+            <div class="radio-card" id="scanner-naabu">
+                <input type="radio" name="scanner" value="naabu">
+                <div class="radio-content">
+                    <div class="radio-title">Naabu</div>
+                    <div class="radio-badge">ACCURATE</div>
+                    <div class="radio-desc">
+                        🎯 Better accuracy<br>
+                        ✅ No root needed
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div style="margin-bottom:20px;">
+        <label style="display:block; margin-bottom:8px; color:#bbb; font-size:0.95em;">
+            Scan Rate: <span id="rate-value">10000</span> packets/sec
+        </label>
+        <input type="range" id="scan-rate" min="1000" max="100000" step="1000" value="10000"
+               style="width:100%;"
+               oninput="document.getElementById('rate-value').textContent=this.value">
+    </div>
+    
+    <div style="margin-bottom:20px;">
+        <label style="display:block; margin-bottom:8px; color:#bbb; font-size:0.95em;">
+            Workers: <span id="workers-value">64</span>
+        </label>
+        <input type="range" id="workers" min="8" max="256" step="8" value="64"
+               style="width:100%;"
+               oninput="document.getElementById('workers-value').textContent=this.value">
+    </div>
+</div>
+
+<div class="card">
+    <h3>🌐 HTTP Fingerprinting</h3>
+    
+    <div style="margin-bottom:20px;">
+        <label style="display:flex; align-items:center; justify-content:space-between;">
+            <span style="color:#bbb; font-size:0.95em;">Enable Httpx Pre-filtering</span>
+            <label class="toggle-switch">
+                <input type="checkbox" id="httpx-enabled" checked>
+                <span class="slider"></span>
+            </label>
+        </label>
+        <div style="margin-top:8px; font-size:0.85em; color:#888;">
+            Run httpx before VPN detection to filter HTTP services and gather fingerprints
+        </div>
+    </div>
+    
+    <div id="httpx-options" style="margin-top:16px; padding-top:16px; border-top:1px solid #333;">
+        <div style="display:grid; grid-template-columns:repeat(2, 1fr); gap:12px;">
+            <label style="display:flex; align-items:center; gap:8px;">
+                <input type="checkbox" checked>
+                <span style="color:#bbb; font-size:0.9em;">Title extraction</span>
+            </label>
+            <label style="display:flex; align-items:center; gap:8px;">
+                <input type="checkbox" checked>
+                <span style="color:#bbb; font-size:0.9em;">Status codes</span>
+            </label>
+            <label style="display:flex; align-items:center; gap:8px;">
+                <input type="checkbox" checked>
+                <span style="color:#bbb; font-size:0.9em;">Tech detection</span>
+            </label>
+            <label style="display:flex; align-items:center; gap:8px;">
+                <input type="checkbox" checked>
+                <span style="color:#bbb; font-size:0.9em;">Header analysis</span>
+            </label>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <h3>🎯 VPN Detection Strategy</h3>
+    
+    <div style="margin-bottom:20px;">
+        <label style="display:block; margin-bottom:8px; color:#bbb; font-size:0.95em;">
+            Detection Pipeline
+        </label>
+        <select id="detection-mode" style="width:100%; background:#2a2a2a; border:1px solid #444; color:#e0e0e0; padding:10px; border-radius:4px;">
+            <option value="nuclei-only">Nuclei Only (Fast, template-based)</option>
+            <option value="checker-only">Custom Checker Only (Deep analysis)</option>
+            <option value="nuclei-then-checker" selected>Nuclei → Checker (Recommended)</option>
+            <option value="parallel">Parallel (Both simultaneously)</option>
+        </select>
+        <div style="margin-top:12px; padding:12px; background:rgba(144,202,249,0.1); border-left:4px solid #90caf9; border-radius:4px; font-size:0.85em; color:#bbb; line-height:1.5;">
+            <strong>💡 Recommended:</strong> Nuclei first (fast detection with templates), then custom checker for verification and DB storage
+        </div>
+    </div>
+    
+    <div style="margin-bottom:20px;">
+        <label style="display:block; margin-bottom:8px; color:#bbb; font-size:0.95em;">
+            Nuclei Template Sets
+        </label>
+        <div style="display:grid; grid-template-columns:repeat(2, 1fr); gap:8px;">
+            <label style="display:flex; align-items:center; gap:8px;">
+                <input type="checkbox" checked>
+                <span style="color:#bbb; font-size:0.9em;">VPN Detection</span>
+            </label>
+            <label style="display:flex; align-items:center; gap:8px;">
+                <input type="checkbox" checked>
+                <span style="color:#bbb; font-size:0.9em;">CVE Scanning</span>
+            </label>
+            <label style="display:flex; align-items:center; gap:8px;">
+                <input type="checkbox">
+                <span style="color:#bbb; font-size:0.9em;">Tech Stack</span>
+            </label>
+            <label style="display:flex; align-items:center; gap:8px;">
+                <input type="checkbox">
+                <span style="color:#bbb; font-size:0.9em;">Default Credentials</span>
+            </label>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <h3>🔧 Advanced Settings</h3>
+    
+    <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:16px; margin-bottom:20px;">
+        <div>
+            <label style="display:block; margin-bottom:4px; color:#bbb; font-size:0.85em;">Port scan timeout</label>
+            <input type="number" value="5" min="1" max="60" style="width:100%; background:#2a2a2a; border:1px solid #444; color:#e0e0e0; padding:8px; border-radius:4px;">
+            <span style="font-size:0.75em; color:#888;">seconds</span>
+        </div>
+        <div>
+            <label style="display:block; margin-bottom:4px; color:#bbb; font-size:0.85em;">HTTP probe timeout</label>
+            <input type="number" value="10" min="5" max="60" style="width:100%; background:#2a2a2a; border:1px solid #444; color:#e0e0e0; padding:8px; border-radius:4px;">
+            <span style="font-size:0.75em; color:#888;">seconds</span>
+        </div>
+        <div>
+            <label style="display:block; margin-bottom:4px; color:#bbb; font-size:0.85em;">VPN check timeout</label>
+            <input type="number" value="15" min="5" max="120" style="width:100%; background:#2a2a2a; border:1px solid #444; color:#e0e0e0; padding:8px; border-radius:4px;">
+            <span style="font-size:0.75em; color:#888;">seconds</span>
+        </div>
+    </div>
+    
+    <div style="margin-bottom:20px;">
+        <label style="display:block; margin-bottom:8px; color:#bbb; font-size:0.95em;">
+            Max Retries: <span id="retries-value">2</span>
+        </label>
+        <input type="range" id="retries" min="0" max="5" value="2" style="width:100%;"
+               oninput="document.getElementById('retries-value').textContent=this.value">
+    </div>
+</div>
+
+<div class="card">
+    <h3>🔍 System Status</h3>
+    
+    <div id="tools-status" hx-get="/api/settings/validate" hx-trigger="load, every 10s" hx-swap="innerHTML">
+        <div style="text-align:center; color:#888; padding:20px;">Checking tools...</div>
+    </div>
+</div>
+
+<div style="display:flex; gap:12px; margin-top:20px;">
+    <button class="btn" style="flex:1; background:#2e7d32; font-size:1em; padding:14px;"
+            onclick="saveSettings()">
+        💾 Save Configuration
+    </button>
+    
+    <button class="btn" style="flex:0.3; background:#d32f2f; font-size:1em; padding:14px;"
+            hx-post="/api/settings/reset"
+            hx-confirm="Reset all settings to defaults?"
+            hx-swap="none"
+            _="on htmx:afterRequest call alert('Settings reset!')">
+        🔄 Reset
+    </button>
+</div>
+
+<style>
+.radio-card {
+    background: #2a2a2a;
+    border: 2px solid #444;
+    border-radius: 6px;
+    padding: 16px;
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+}
+.radio-card:hover {
+    border-color: #666;
+    background: #2f2f2f;
+}
+.radio-card input {
+    position: absolute;
+    opacity: 0;
+}
+.radio-card input:checked ~ .radio-content {
+    border-color: #90caf9;
+}
+.radio-content {
+    border: 2px solid transparent;
+    border-radius: 4px;
+    padding: 8px;
+    transition: border-color 0.2s;
+}
+.radio-title {
+    font-weight: 600;
+    color: #90caf9;
+    margin-bottom: 4px;
+}
+.radio-badge {
+    display: inline-block;
+    background: #2e7d32;
+    color: white;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 0.75em;
+    margin-bottom: 8px;
+}
+.radio-desc {
+    font-size: 0.85em;
+    color: #888;
+    line-height: 1.4;
+}
+
+.toggle-switch {
+    position: relative;
+    display: inline-block;
+    width: 50px;
+    height: 26px;
+}
+.toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+.slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background-color: #555;
+    transition: .3s;
+    border-radius: 26px;
+}
+.slider:before {
+    position: absolute;
+    content: "";
+    height: 18px;
+    width: 18px;
+    left: 4px;
+    bottom: 4px;
+    background-color: white;
+    transition: .3s;
+    border-radius: 50%;
+}
+input:checked + .slider {
+    background-color: #2e7d32;
+}
+input:checked + .slider:before {
+    transform: translateX(24px);
+}
+
+input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 6px;
+    background: #444;
+    border-radius: 3px;
+    outline: none;
+}
+input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    background: #90caf9;
+    border-radius: 50%;
+    cursor: pointer;
+}
+input[type="range"]::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    background: #90caf9;
+    border-radius: 50%;
+    cursor: pointer;
+    border: none;
+}
+</style>
+
+<script>
+function saveSettings() {
+    const config = {
+        scanner: {
+            engine: document.querySelector('input[name="scanner"]:checked').value,
+            rate: parseInt(document.getElementById('scan-rate').value),
+            workers: parseInt(document.getElementById('workers').value),
+            timeout: parseInt(document.querySelectorAll('input[type="number"]')[0].value),
+            retries: parseInt(document.getElementById('retries').value)
+        },
+        httpx: {
+            enabled: document.getElementById('httpx-enabled').checked,
+            timeout: parseInt(document.querySelectorAll('input[type="number"]')[1].value),
+            threads: 50,
+            extract_title: document.querySelectorAll('#httpx-options input')[0].checked,
+            tech_detect: document.querySelectorAll('#httpx-options input')[1].checked,
+            status_code: document.querySelectorAll('#httpx-options input')[2].checked,
+            headers: document.querySelectorAll('#httpx-options input')[3].checked
+        },
+        detection: {
+            mode: document.getElementById('detection-mode').value,
+            timeout: parseInt(document.querySelectorAll('input[type="number"]')[2].value),
+            nuclei: {
+                templates: ['vpn', 'cves'],
+                severity: ['info', 'low', 'medium', 'high', 'critical'],
+                concurrent: 25
+            },
+            checker: {
+                min_workers: 10,
+                max_workers: 100,
+                verify_ssl: false
+            }
+        },
+        brute: {
+            enabled: true,
+            timeout: 30,
+            max_attempts: 3
+        }
+    };
+    
+    fetch('/api/settings/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config)
+    })
+    .then(response => response.json())
+    .then(data => {
+        alert('✅ Settings saved successfully!');
+        htmx.trigger('#pipeline-visual', 'load');
+    })
+    .catch(error => {
+        alert('❌ Failed to save settings: ' + error);
+    });
+}
+
+// Toggle httpx options visibility
+document.getElementById('httpx-enabled').addEventListener('change', function() {
+    const options = document.getElementById('httpx-options');
+    options.style.display = this.checked ? 'block' : 'none';
+});
+</script>
