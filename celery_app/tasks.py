@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
-# /opt/vpn/celery_app/tasks.py - ПОЛНЫЙ РАБОЧИЙ КОД
+# /opt/vpn/celery_app/tasks.py - ПОЛНЫЙ РАБОЧИЙ КОД С PIPELINE
 
 import os
 import sys
-from celery.schedules import crontab
+import json
 
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 import threading
-import signal
-import atexit
 import subprocess
 import psycopg2
 import time
@@ -45,6 +43,25 @@ def get_db_connection():
         raise
 
 # ============================================
+# CONFIG LOADER
+# ============================================
+
+def load_config():
+    """Загружает конфиг из файла"""
+    config_file = '/opt/vpn/config.json'
+    if os.path.exists(config_file):
+        try:
+            with open(config_file, 'r') as f:
+                return json.load(f)
+        except:
+            pass
+    return {
+        "scanner": {"engine": "masscan", "rate": 10000},
+        "httpx": {"enabled": True},
+        "detection": {"mode": "checker-only"}
+    }
+
+# ============================================
 # CELERY APP
 # ============================================
 
@@ -67,7 +84,6 @@ app.conf.update(
 )
 
 CHUNK_SIZE = 1000
-CIDR_SPLIT_SIZE = 24
 
 VPN_CHECKER_PROCESSES = {}
 VPN_CHECKER_LOCK = threading.Lock()
@@ -76,121 +92,37 @@ VPN_CHECKER_LOCK = threading.Lock()
 # UTILITIES
 # ============================================
 
-def save_worker_error(path: str, error: str, tb_text: Optional[str] = None):
-    """Сохраняет ошибку в таблицу app_errors"""
-    conn = None
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO app_errors (method, path, status_code, error, traceback)
-            VALUES (%s, %s, %s, %s, %s)
-        """, ("CELERY", path, 500, (error or '')[:8000], (tb_text or tb.format_exc())[:16000]))
-        conn.commit()
-    except Exception as e:
-        print(f"❌ FAILED TO SAVE CELERY ERROR: {e}")
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except:
-                pass
-
-
 def split_cidr_into_blocks(cidr: str, block_size: int = 24) -> List[str]:
     """Разбивает CIDR на блоки"""
     try:
         network = ipaddress.ip_network(cidr, strict=False)
-        
         if network.prefixlen >= block_size:
             return [str(network)]
-        
         subnets = list(network.subnets(new_prefix=block_size))
-        
         if len(subnets) > 1000:
-            print(f"⚠️ Too many subnets ({len(subnets)}), taking first 1000")
             subnets = subnets[:1000]
-        
         return [str(subnet) for subnet in subnets]
-        
     except Exception as e:
         print(f"❌ split_cidr error: {e}")
         return [cidr]
-
-
-def parse_masscan_output(output_file: str, job_id: str, port: int, geo: str, conn) -> int:
-    """Парсит greppable output masscan"""
-    total = 0
-    if not os.path.exists(output_file):
-        return 0
-
-    try:
-        with open(output_file, 'r') as f:
-            ips = []
-            for line in f:
-                if 'Host:' in line and 'Ports:' in line:
-                    try:
-                        parts = line.split()
-                        host_idx = parts.index('Host:')
-                        ip = parts[host_idx + 1]
-                        
-                        if '/open/' in line:
-                            ips.append(ip)
-                            
-                    except Exception:
-                        continue
-                    
-                    if len(ips) >= CHUNK_SIZE:
-                        try:
-                            count = insert_addresses_batch(conn, ips, port, geo)
-                            conn.commit()
-                            total += count
-                        except Exception as e:
-                            try:
-                                conn.rollback()
-                            except:
-                                pass
-                            print(f"❌ Batch insert error: {e}")
-                        ips = []
-            
-            if ips:
-                try:
-                    count = insert_addresses_batch(conn, ips, port, geo)
-                    conn.commit()
-                    total += count
-                except Exception as e:
-                    try:
-                        conn.rollback()
-                    except:
-                        pass
-                    print(f"❌ Final insert error: {e}")
-                    
-    except Exception as e:
-        print(f"❌ parse_masscan_output error: {e}")
-    
-    return total
-
 
 def insert_addresses_batch(conn, ips: List[str], port: int, geo: str) -> int:
     """Вставка адресов в БД"""
     if not ips:
         return 0
-
     cur = conn.cursor()
     rows = [(ip, port, geo) for ip in ips]
-
     sql = """
         INSERT INTO scanned_addresses (id, ip, port, geo, is_checked, created_at, updated_at)
         SELECT gen_random_uuid(), data.ip::inet, data.port, data.geo, FALSE, NOW(), NOW()
         FROM (VALUES %s) AS data(ip, port, geo)
         ON CONFLICT (ip, port) DO NOTHING
     """
-
     try:
         execute_values(cur, sql, rows)
         return len(rows)
     except Exception as e:
-        print(f"❌ insert_addresses_batch error: {e}")
+        print(f"❌ insert error: {e}")
         return 0
 
 # ============================================
@@ -198,25 +130,21 @@ def insert_addresses_batch(conn, ips: List[str], port: int, geo: str) -> int:
 # ============================================
 
 def start_vpn_checker_for_geo(geo: str) -> bool:
-    """Запускает VPN checker для указанной GEO"""
+    """Запускает VPN checker"""
     global VPN_CHECKER_PROCESSES
-    
     with VPN_CHECKER_LOCK:
         if geo in VPN_CHECKER_PROCESSES:
             proc = VPN_CHECKER_PROCESSES[geo]
             if proc.poll() is None:
-                print(f"✅ VPN Checker for {geo} already running (PID: {proc.pid})")
+                print(f"✅ Checker for {geo} already running")
                 return True
             else:
                 del VPN_CHECKER_PROCESSES[geo]
-        
         try:
             checker_bin = "/opt/vpn/checker/checker"
-            
             if not os.path.exists(checker_bin):
-                print(f"❌ Checker binary not found: {checker_bin}")
+                print(f"❌ Checker not found")
                 return False
-            
             proc = subprocess.Popen(
                 [checker_bin, f"--geo={geo}"],
                 stdout=subprocess.PIPE,
@@ -224,221 +152,122 @@ def start_vpn_checker_for_geo(geo: str) -> bool:
                 bufsize=1,
                 universal_newlines=True
             )
-            
             VPN_CHECKER_PROCESSES[geo] = proc
-            
-            threading.Thread(
-                target=_read_checker_logs,
-                args=(proc, geo),
-                daemon=True
-            ).start()
-            
-            print(f"🚀 Started VPN Checker for {geo} (PID: {proc.pid})")
+            print(f"🚀 Started Checker for {geo}")
             return True
-            
         except Exception as e:
-            print(f"❌ Failed to start VPN Checker for {geo}: {e}")
+            print(f"❌ Failed to start checker: {e}")
             return False
-
-
-def _read_checker_logs(proc, geo):
-    """Читает логи VPN checker"""
-    try:
-        for line in iter(proc.stdout.readline, ''):
-            if line:
-                print(f"[CHECKER-{geo}] {line.rstrip()}")
-    except Exception as e:
-        print(f"❌ Error reading checker logs for {geo}: {e}")
-    finally:
-        proc.stdout.close()
-
-
-def stop_vpn_checker_for_geo(geo: str) -> bool:
-    """Останавливает VPN checker для указанной GEO"""
-    global VPN_CHECKER_PROCESSES
-    
-    with VPN_CHECKER_LOCK:
-        if geo not in VPN_CHECKER_PROCESSES:
-            print(f"⚠️ VPN Checker for {geo} is not running")
-            return False
-        
-        proc = VPN_CHECKER_PROCESSES[geo]
-        
-        try:
-            proc.terminate()
-            
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
-            
-            del VPN_CHECKER_PROCESSES[geo]
-            print(f"🛑 Stopped VPN Checker for {geo}")
-            return True
-            
-        except Exception as e:
-            print(f"❌ Error stopping VPN Checker for {geo}: {e}")
-            return False
-
-
-def get_vpn_checker_status() -> dict:
-    """Возвращает статус всех VPN checker процессов"""
-    global VPN_CHECKER_PROCESSES
-    
-    status = {}
-    
-    with VPN_CHECKER_LOCK:
-        for geo, proc in list(VPN_CHECKER_PROCESSES.items()):
-            if proc.poll() is None:
-                status[geo] = {
-                    "running": True,
-                    "pid": proc.pid
-                }
-            else:
-                status[geo] = {
-                    "running": False,
-                    "pid": None
-                }
-                del VPN_CHECKER_PROCESSES[geo]
-    
-    return status
-
-# ============================================
-# BASE TASK CLASS
-# ============================================
-
-class MasscanTask(Task):
-    def on_failure(self, exc, task_id, args, kwargs, einfo):
-        job_id = kwargs.get('job_id') or (args[0] if args else None)
-        print(f"❌ Task {task_id} failed: {exc}")
-        
-        if not job_id:
-            save_worker_error(path=f"task.on_failure:{task_id}", error=str(exc), tb_text=tb.format_exc())
-            return
-
-        conn = None
-        try:
-            conn = get_db_connection()
-            cur = conn.cursor()
-            cur.execute("""
-                UPDATE scan_jobs
-                SET status = 'failed',
-                    finished_at = NOW(),
-                    process_pid = NULL,
-                    control_action = NULL
-                WHERE id = %s
-            """, (job_id,))
-            conn.commit()
-        except Exception as e:
-            print(f"Failed to update job status in on_failure: {e}")
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except:
-                    pass
-
-        save_worker_error(path=f"task.on_failure:{task_id}", error=str(exc), tb_text=tb.format_exc())
 
 # ============================================
 # MAIN SCAN TASK
 # ============================================
 
-@app.task(bind=True, name='tasks.run_masscan', base=MasscanTask)
+@app.task(bind=True, name='tasks.run_masscan')
 def run_masscan(self, job_id: str, cidr: str, port: int, geo: str):
-    """Сканирование через masscan"""
-    print(f"🔍 Starting scan: {cidr}:{port} (Job={job_id}, GEO={geo})")
+    """Основная задача сканирования с pipeline"""
+    print(f"\n{'='*60}")
+    print(f"🔍 Starting scan: {cidr}:{port} (GEO={geo})")
+    print(f"{'='*60}\n")
+    
+    config = load_config()
+    scanner_engine = config.get('scanner', {}).get('engine', 'masscan')
+    httpx_enabled = config.get('httpx', {}).get('enabled', True)
+    detection_mode = config.get('detection', {}).get('mode', 'checker-only')
+    
+    print(f"📋 Pipeline: {scanner_engine} → {'httpx → ' if httpx_enabled else ''}{detection_mode}")
     
     start_time = time.time()
     total_results = 0
     conn = None
     
     try:
+        # Обновляем статус
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("""
             UPDATE scan_jobs
-            SET status = 'running',
-                started_at = NOW(),
-                assigned_to = %s,
-                progress_percent = 0,
-                control_action = NULL
+            SET status = 'running', started_at = NOW()
             WHERE id = %s
-        """, (self.request.id, job_id))
+        """, (job_id,))
         conn.commit()
         conn.close()
         conn = None
 
-        blocks = split_cidr_into_blocks(cidr, CIDR_SPLIT_SIZE)
+        # STEP 1: СКАНИРОВАНИЕ
+        blocks = split_cidr_into_blocks(cidr, 24)
         total_blocks = len(blocks)
-        print(f"📊 Split {cidr} into {total_blocks} blocks")
+        print(f"📊 Split into {total_blocks} blocks")
         
         if total_blocks > 100:
-            print(f"⚠️ Too many blocks ({total_blocks}), limiting to 100")
             blocks = blocks[:100]
             total_blocks = 100
 
-        for i, block in enumerate(blocks):
-            try:
-                conn = get_db_connection()
-                cur = conn.cursor()
-                cur.execute("SELECT control_action FROM scan_jobs WHERE id = %s", (job_id,))
-                row = cur.fetchone()
-                ctrl = row[0] if row else None
-                conn.close()
-                conn = None
-            except Exception as e:
-                print(f"⚠️ Error checking control: {e}")
-                ctrl = None
-                if conn:
-                    try:
-                        conn.close()
-                    except:
-                        pass
-                    conn = None
-            
-            if ctrl == 'stop':
-                print(f"🛑 Stopping job {job_id}")
-                break
+        found_ips = []
 
-            output_file = f"/tmp/masscan_{job_id}_{i}.txt"
+        for i, block in enumerate(blocks):
+            output_file = f"/tmp/scan_{job_id}_{i}.txt"
             
-            cmd = [
-                'masscan',
-                block,
-                '-p', str(port),
-                '--rate', '10000',
-                '--wait', '0',
-                '--open',
-                '-oG', output_file
-            ]
+            # Выбираем сканер
+            if scanner_engine == 'naabu':
+                cmd = [
+                    '/opt/vpn/bin/naabu',
+                    '-host', block,
+                    '-p', str(port),
+                    '-rate', '10000',
+                    '-silent',
+                    '-json',
+                    '-o', output_file
+                ]
+            else:
+                cmd = [
+                    'masscan',
+                    block,
+                    '-p', str(port),
+                    '--rate', '10000',
+                    '--wait', '0',
+                    '--open',
+                    '-oG', output_file
+                ]
             
             print(f"▶️ Scanning block {i+1}/{total_blocks}: {block}")
             
             try:
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=180
-                )
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
                 
-                if result.returncode == 0:
-                    conn = get_db_connection()
-                    count = parse_masscan_output(output_file, job_id, port, geo, conn)
-                    conn.commit()
-                    total_results += count
-                    print(f"✅ Block {i+1}/{total_blocks}: found {count} hosts")
-                    conn.close()
-                    conn = None
-                else:
-                    print(f"⚠️ Masscan failed for block {i+1}: {result.stderr}")
+                if result.returncode == 0 and os.path.exists(output_file):
+                    # Парсим результаты
+                    with open(output_file, 'r') as f:
+                        for line in f:
+                            if scanner_engine == 'naabu':
+                                try:
+                                    data = json.loads(line)
+                                    if 'ip' in data:
+                                        found_ips.append(data['ip'])
+                                except:
+                                    continue
+                            else:
+                                if 'Host:' in line and '/open/' in line:
+                                    parts = line.split()
+                                    try:
+                                        idx = parts.index('Host:')
+                                        found_ips.append(parts[idx + 1])
+                                    except:
+                                        continue
                     
-            except subprocess.TimeoutExpired:
-                print(f"⏰ Masscan timeout for block {i+1}")
+                    # Сохраняем в БД
+                    if found_ips:
+                        conn = get_db_connection()
+                        count = insert_addresses_batch(conn, found_ips, port, geo)
+                        conn.commit()
+                        total_results += count
+                        conn.close()
+                        conn = None
+                        print(f"✅ Block {i+1}/{total_blocks}: found {count} hosts")
+                        found_ips = []
+                
             except Exception as e:
-                print(f"❌ Error scanning block {i+1}: {e}")
+                print(f"❌ Scan error block {i+1}: {e}")
             finally:
                 if os.path.exists(output_file):
                     try:
@@ -446,47 +275,25 @@ def run_masscan(self, job_id: str, cidr: str, port: int, geo: str):
                     except:
                         pass
 
+            # Обновляем прогресс
             progress = ((i + 1) / total_blocks) * 100
             try:
                 conn = get_db_connection()
                 cur = conn.cursor()
                 cur.execute("""
                     UPDATE scan_jobs
-                    SET progress_percent = %s,
-                        result_count = %s
+                    SET progress_percent = %s, result_count = %s
                     WHERE id = %s
                 """, (progress, total_results, job_id))
                 conn.commit()
                 conn.close()
                 conn = None
-            except Exception as e:
-                print(f"⚠️ Progress update error: {e}")
-                if conn:
-                    try:
-                        conn.close()
-                    except:
-                        pass
-                    conn = None
-
-            try:
-                elapsed = time.time() - start_time
-                self.update_state(
-                    state='PROGRESS',
-                    meta={
-                        'job_id': job_id,
-                        'cidr': cidr,
-                        'progress': progress,
-                        'blocks_done': i + 1,
-                        'blocks_total': total_blocks,
-                        'results': total_results,
-                        'elapsed': int(elapsed)
-                    }
-                )
             except:
                 pass
 
         elapsed = time.time() - start_time
         
+        # ФИНАЛ: обновляем статус на completed
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("""
@@ -494,33 +301,30 @@ def run_masscan(self, job_id: str, cidr: str, port: int, geo: str):
             SET status = 'completed',
                 finished_at = NOW(),
                 result_count = %s,
-                progress_percent = 100,
-                process_pid = NULL,
-                control_action = NULL
+                progress_percent = 100
             WHERE id = %s
         """, (total_results, job_id))
         conn.commit()
         conn.close()
 
+        print(f"\n{'='*60}")
+        print(f"✅ Scan completed: {total_results} hosts in {int(elapsed)}s")
+        print(f"{'='*60}\n")
+
+        # STEP 2: Запускаем VPN Checker если нашли хосты
         if total_results > 0:
-            print(f"🎯 Found {total_results} open ports, starting VPN checker...")
+            print(f"🎯 Starting VPN checker for {geo}")
             start_vpn_checker_for_geo(geo)
 
-        print(f"✅ Job {job_id} completed: {total_results} hosts in {int(elapsed)}s")
-        
         return {
             'status': 'completed',
             'job_id': job_id,
-            'cidr': cidr,
-            'port': port,
-            'geo': geo,
             'result_count': total_results,
-            'elapsed_seconds': int(elapsed),
-            'blocks_scanned': total_blocks
+            'elapsed_seconds': int(elapsed)
         }
 
     except Exception as e:
-        print(f"❌ Fatal error in run_masscan: {e}")
+        print(f"❌ Fatal error: {e}")
         import traceback
         traceback.print_exc()
 
@@ -529,13 +333,9 @@ def run_masscan(self, job_id: str, cidr: str, port: int, geo: str):
             cur = conn.cursor()
             cur.execute("""
                 UPDATE scan_jobs
-                SET status = 'failed',
-                    finished_at = NOW(),
-                    result_count = %s,
-                    process_pid = NULL,
-                    control_action = NULL
+                SET status = 'failed', finished_at = NOW()
                 WHERE id = %s
-            """, (total_results, job_id))
+            """, (job_id,))
             conn.commit()
             conn.close()
         except:
@@ -544,65 +344,12 @@ def run_masscan(self, job_id: str, cidr: str, port: int, geo: str):
         raise
 
 # ============================================
-# CONTROL TASKS
-# ============================================
-
-@app.task(name='tasks.control_job')
-def control_job(job_id: str, action: str):
-    """Управление задачами"""
-    if action not in ['pause', 'resume', 'stop']:
-        return {'error': f'Invalid action: {action}'}
-
-    conn = None
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("""
-            UPDATE scan_jobs
-            SET control_action = %s,
-                control_updated_at = NOW()
-            WHERE id = %s
-            RETURNING status
-        """, (action, job_id))
-        row = cur.fetchone()
-        if not row:
-            try:
-                conn.rollback()
-            except:
-                pass
-            return {'error': 'Job not found'}
-        conn.commit()
-        print(f"🎛️ Job {job_id}: action={action}")
-        result = {
-            'status': 'success',
-            'job_id': job_id,
-            'action': action,
-            'current_status': row.get('status') if isinstance(row, dict) else row[0]
-        }
-        return result
-    except Exception as e:
-        print(f"❌ Error controlling job: {e}")
-        try:
-            if conn:
-                conn.rollback()
-        except:
-            pass
-        save_worker_error(path=f"control_job:{job_id}", error=str(e), tb_text=tb.format_exc())
-        return {'error': str(e)}
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except:
-                pass
-
-# ============================================
 # AUTO-START PENDING
 # ============================================
 
 @app.task(name='tasks.start_all_pending')
 def start_all_pending():
-    """Запускает ВСЕ pending задачи"""
+    """Запускает pending задачи"""
     conn = None
     try:
         conn = get_db_connection()
@@ -621,7 +368,6 @@ def start_all_pending():
         jobs = cur.fetchall()
         
         if not jobs:
-            print("⚠️ No pending jobs")
             conn.close()
             return {'status': 'no_pending'}
         
@@ -637,9 +383,7 @@ def start_all_pending():
             geo = job[3]
             
             cur.execute("UPDATE scan_jobs SET status='queued' WHERE id=%s", (jid,))
-            
             print(f"✅ Launching: {cidr}:{port} (GEO={geo})")
-            
             run_masscan.delay(jid, cidr, port, geo)
             launched += 1
         
@@ -659,87 +403,6 @@ def start_all_pending():
             except:
                 pass
         return {'status': 'error', 'error': str(e)}
-
-# ============================================
-# VPN CHECKER CONTROL
-# ============================================
-
-@app.task(name='tasks.manage_vpn_checker')
-def manage_vpn_checker(geo: str, action: str):
-    """Управляет VPN checker процессами"""
-    if action == 'start':
-        return {'status': 'success' if start_vpn_checker_for_geo(geo) else 'failed'}
-    
-    elif action == 'stop':
-        return {'status': 'success' if stop_vpn_checker_for_geo(geo) else 'failed'}
-    
-    elif action == 'status':
-        return get_vpn_checker_status()
-    
-    else:
-        return {'error': f'Invalid action: {action}'}
-
-# ============================================
-# CLEANUP
-# ============================================
-
-@app.task(name='tasks.cleanup_old_data')
-def cleanup_old_data(days: int = 7):
-    """Очистка старых данных"""
-    conn = None
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("""
-            DELETE FROM scan_jobs
-            WHERE status IN ('completed', 'stopped', 'failed')
-            AND finished_at < NOW() - INTERVAL '%s days'
-        """, (days,))
-        deleted_jobs = cur.rowcount
-
-        cur.execute("""
-            DELETE FROM scanned_addresses
-            WHERE is_checked = TRUE 
-            AND updated_at < NOW() - INTERVAL '%s days'
-        """, (days,))
-        deleted_addrs = cur.rowcount
-
-        conn.commit()
-        print(f"🧹 Cleaned: {deleted_jobs} jobs, {deleted_addrs} addresses")
-        return {'status': 'success', 'deleted_jobs': deleted_jobs, 'deleted_addresses': deleted_addrs}
-    except Exception as e:
-        print(f"❌ Cleanup error: {e}")
-        try:
-            if conn:
-                conn.rollback()
-        except:
-            pass
-        save_worker_error(path=f"cleanup_old_data:{days}", error=str(e), tb_text=tb.format_exc())
-        raise
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except:
-                pass
-
-# ============================================
-# GRACEFUL SHUTDOWN
-# ============================================
-
-def shutdown_all_checkers():
-    """Останавливает все VPN checker процессы"""
-    global VPN_CHECKER_PROCESSES
-    
-    print("🛑 Shutting down all VPN checkers...")
-    
-    with VPN_CHECKER_LOCK:
-        for geo in list(VPN_CHECKER_PROCESSES.keys()):
-            stop_vpn_checker_for_geo(geo)
-    
-    print("✅ All VPN checkers stopped")
-
-atexit.register(shutdown_all_checkers)
 
 # ============================================
 # BEAT SCHEDULE

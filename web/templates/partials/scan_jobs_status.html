@@ -28,3 +28,38 @@
     {% endfor %}
   </tbody>
 </table>
+
+<table>
+  <thead>
+    <tr>
+      <th>GEO</th>
+      <th>CIDR</th>
+      <th>Port</th>
+      <th>Status</th>
+      <th>Progress</th>
+      <th>Results</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for geo in ['US', 'EU', 'ASIA'] %}
+    <tr>
+      <td><strong>{{ geo }}</strong></td>
+      <td colspan="5">
+        <table style="width:100%; margin:0;">
+          {% for job_id, job_data in masscan_jobs.items() %}
+            {% if job_data.geo == geo %}
+            <tr>
+              <td>{{ job_data.cidr }}</td>
+              <td>{{ job_data.port }}</td>
+              <td>{{ job_data.status }}</td>
+              <td>{{ job_data.progress }}%</td>
+              <td>{{ job_data.results }}</td>
+            </tr>
+            {% endif %}
+          {% endfor %}
+        </table>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
